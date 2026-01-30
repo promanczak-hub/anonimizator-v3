@@ -159,6 +159,34 @@ async def get_job(
     return result
 
 
+@router.post("/{job_id}/retry")
+async def retry_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """Retry a failed or stuck job by re-queuing it for processing"""
+    job = await session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Only allow retry for stuck/failed jobs
+    if job.status in ("done", "queued"):
+        raise HTTPException(
+            status_code=400, detail=f"Job is already {job.status}, cannot retry"
+        )
+
+    # Reset job status and re-queue
+    job.status = "queued"
+    job.progress = 0
+    job.error_message = None
+    await session.commit()
+
+    # Re-trigger processing
+    process_document.delay(str(job.id))
+
+    return {"message": "Job re-queued for processing", "job_id": str(job.id)}
+
+
 @router.get("/{job_id}/thumbnail/{page}")
 async def get_thumbnail(
     job_id: UUID,
@@ -173,8 +201,26 @@ async def get_thumbnail(
     thumbnail_path = (
         Path(settings.storage_path) / "thumbnails" / str(job.id) / f"page_{page}.png"
     )
+
+    # Generate thumbnail on-the-fly if not exists
     if not thumbnail_path.exists():
-        raise HTTPException(status_code=404, detail="Thumbnail not found")
+        # Get PDF path
+        pdf_path = (
+            Path(settings.storage_path) / "inputs" / str(job.id) / job.original_filename
+        )
+        if not pdf_path.exists():
+            raise HTTPException(status_code=404, detail="PDF not found")
+
+        # Create thumbnails directory
+        thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Generate thumbnail using context manager
+        from app.services.pdf_processor import PDFProcessor
+
+        with PDFProcessor(pdf_path) as processor:
+            thumb_bytes = processor.render_thumbnail(page)
+            with open(thumbnail_path, "wb") as f:
+                f.write(thumb_bytes)
 
     return FileResponse(thumbnail_path, media_type="image/png")
 
@@ -207,6 +253,8 @@ async def get_text_blocks(
 
     pages_to_process = range(len(doc)) if page is None else [page]
 
+    # Get text and image blocks
+    # fitz.TextPage.extractDICT returns blocks with "type": 0 (text) or 1 (image)
     for page_num in pages_to_process:
         if page_num >= len(doc):
             continue
@@ -223,29 +271,56 @@ async def get_text_blocks(
         }
 
         for block in blocks:
-            if block.get("type") != 0:  # Skip non-text blocks
+            b_type = block.get("type", 0)
+            bbox = block.get("bbox", [])
+
+            if len(bbox) < 4:
                 continue
 
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    text = span.get("text", "").strip()
-                    if not text:
-                        continue
+            # Normalized bbox (0-100%)
+            norm_bbox = {
+                "x": bbox[0] / page_rect.width * 100,
+                "y": bbox[1] / page_rect.height * 100,
+                "w": (bbox[2] - bbox[0]) / page_rect.width * 100,
+                "h": (bbox[3] - bbox[1]) / page_rect.height * 100,
+            }
 
-                    bbox = span.get("bbox", [])
-                    if len(bbox) >= 4:
-                        page_data["blocks"].append(
-                            {
-                                "text": text,
-                                "bbox": {
-                                    "x": bbox[0] / page_rect.width * 100,
-                                    "y": bbox[1] / page_rect.height * 100,
-                                    "w": (bbox[2] - bbox[0]) / page_rect.width * 100,
-                                    "h": (bbox[3] - bbox[1]) / page_rect.height * 100,
-                                },
-                                "font_size": span.get("size", 12),
-                            }
-                        )
+            if b_type == 0:  # Text
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = span.get("text", "").strip()
+                        if not text:
+                            continue
+
+                        span_bbox = span.get("bbox", [])
+                        if len(span_bbox) >= 4:
+                            page_data["blocks"].append(
+                                {
+                                    "type": "text",
+                                    "text": text,
+                                    "bbox": {
+                                        "x": span_bbox[0] / page_rect.width * 100,
+                                        "y": span_bbox[1] / page_rect.height * 100,
+                                        "w": (span_bbox[2] - span_bbox[0])
+                                        / page_rect.width
+                                        * 100,
+                                        "h": (span_bbox[3] - span_bbox[1])
+                                        / page_rect.height
+                                        * 100,
+                                    },
+                                    "font_size": span.get("size", 12),
+                                }
+                            )
+
+            elif b_type == 1:  # Image
+                page_data["blocks"].append(
+                    {
+                        "type": "image",
+                        "text": "[IMAGE]",
+                        "bbox": norm_bbox,
+                        "font_size": 0,
+                    }
+                )
 
         result["pages"].append(page_data)
 
@@ -283,9 +358,14 @@ async def text_replace(
     session: AsyncSession = Depends(get_session),
 ):
     """
-    Apply text replacements to PDF.
+    Apply text replacements to PDF using white fill + text insert technique.
 
     Each replacement is: {"find": "80.000", "replace": "100.000", "page": 0 or null for all}
+
+    This method:
+    - Draws white rectangle over original text (no visible border)
+    - Inserts new text with matching font size
+    - Automatically shifts text LEFT if replacement is longer (prevents overflow)
     """
     from pydantic import BaseModel
 
@@ -320,31 +400,65 @@ async def text_replace(
             text_instances = page.search_for(repl.find)
 
             for inst in text_instances:
-                # Add redaction annotation to remove old text
-                page.add_redact_annot(inst, fill=(1, 1, 1))  # White fill
+                # Get original text properties for font matching
+                text_dict = page.get_text("dict", clip=inst)
+                font_size = 10  # default
+                for block in text_dict.get("blocks", []):
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            font_size = span.get("size", 10)
+                            break
+
+                # Calculate width difference for longer replacements
+                orig_width = inst.x1 - inst.x0
+                # Estimate new width (approx chars * avg char width)
+                avg_char_width = orig_width / max(1, len(repl.find))
+                new_width = len(repl.replace) * avg_char_width
+                left_shift = max(0, new_width - orig_width)
+
+                # Expand rectangle to cover area for longer text
+                cover_rect = fitz.Rect(
+                    inst.x0 - left_shift - 2,  # Shift left if needed
+                    inst.y0 - 1,
+                    inst.x1 + 2,
+                    inst.y1 + 1,
+                )
+
+                if not repl.replace:
+                    # Empty replacement = TRUE DELETION using redaction API
+                    # This removes text from content stream, not just covers it
+                    page.add_redact_annot(cover_rect, fill=(1, 1, 1))
+                else:
+                    # Text replacement: white cover + new text
+                    page.draw_rect(cover_rect, color=None, fill=(1, 1, 1), width=0)
+
+                    # Insert new text at adjusted position
+                    text_x = inst.x0 - left_shift  # Shift left for longer text
+                    text_y = inst.y1 - 1.5  # Baseline position
+
+                    page.insert_text(
+                        fitz.Point(text_x, text_y),
+                        repl.replace,
+                        fontsize=font_size,
+                        fontname="helv",  # Helvetica - similar to Arial
+                        color=(0, 0, 0),  # Black text
+                    )
+
                 changes_made.append(
                     {
                         "page": page_num,
                         "find": repl.find,
                         "replace": repl.replace,
                         "bbox": [inst.x0, inst.y0, inst.x1, inst.y1],
+                        "left_shift": left_shift,
+                        "action": "delete" if not repl.replace else "replace",
                     }
                 )
 
-            # Apply redactions
-            if text_instances:
-                page.apply_redactions()
-
-                # Insert new text at each location
-                for inst in text_instances:
-                    # Get approximate font size based on box height
-                    font_size = max(8, int((inst.y1 - inst.y0) * 0.8))
-                    page.insert_text(
-                        (inst.x0, inst.y1 - 2),  # Slightly adjust position
-                        repl.replace,
-                        fontsize=font_size,
-                        color=(0, 0, 0),  # Black text
-                    )
+    # Apply redactions (finalize deletions - removes text from content stream)
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        page.apply_redactions()
 
     # Save modified PDF
     output_dir = Path(settings.storage_path) / "outputs" / str(job.id)
@@ -369,17 +483,90 @@ async def text_replace(
     return {"status": "ok", "changes_count": len(changes_made), "changes": changes_made}
 
 
+@router.post("/{job_id}/delete-blocks")
+async def delete_blocks(
+    job_id: UUID,
+    blocks: list = [],  # List of { page: int, bbox: [x, y, w, h] (normalized %) }
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Delete specific blocks (images or text areas) using redaction.
+    Input: List of blocks with normalized coordinates (0-100%).
+    """
+    job = await session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    input_path = Path(settings.storage_path) / job.input_path
+    if not input_path.exists():
+        raise HTTPException(status_code=404, detail="PDF file not found")
+
+    import fitz
+
+    doc = fitz.open(str(input_path))
+
+    for block in blocks:
+        page_num = block.get("page")
+        if page_num is None or page_num >= len(doc):
+            continue
+
+        page = doc[page_num]
+        page_rect = page.rect
+
+        # Convert normalized coordinates (0-100) back to PDF points
+        bbox = block.get("bbox", {})
+        if not bbox:
+            continue
+
+        x = (bbox.get("x", 0) / 100) * page_rect.width
+        y = (bbox.get("y", 0) / 100) * page_rect.height
+        w = (bbox.get("w", 0) / 100) * page_rect.width
+        h = (bbox.get("h", 0) / 100) * page_rect.height
+
+        # Create redaction annotation
+        rect = fitz.Rect(x, y, x + w, y + h)
+        page.add_redact_annot(rect, fill=(1, 1, 1))  # White fill
+
+    # Apply redactions
+    for page in doc:
+        page.apply_redactions()
+
+    # Save modified PDF
+    output_dir = Path(settings.storage_path) / "outputs" / str(job.id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"blocks_removed_{job.original_filename}"
+    doc.save(str(output_path))
+    doc.close()
+
+    # Update job
+    job.output_pdf_path = str(output_path.relative_to(settings.storage_path))
+    job.status = "done"
+    job.completed_at = datetime.utcnow()
+    await session.commit()
+
+    # Regenerate thumbnails
+    from app.services.pdf_processor import PDFProcessor
+
+    thumbnails_dir = Path(settings.storage_path) / "thumbnails" / str(job.id)
+    with PDFProcessor(output_path) as processor:
+        processor.generate_thumbnails(thumbnails_dir)
+
+    return {"status": "ok", "deleted_count": len(blocks)}
+
+
 @router.post("/{job_id}/delete-pages")
 async def delete_pages(
     job_id: UUID,
-    pages: list[int] = [],
+    request_body: dict = {},
     session: AsyncSession = Depends(get_session),
 ):
     """
     Delete entire pages from PDF.
 
-    pages: list of 0-indexed page numbers to delete
+    Body: {"pages": [0, 2, 5]} - list of 0-indexed page numbers to delete
     """
+    pages = request_body.get("pages", [])
+
     job = await session.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")

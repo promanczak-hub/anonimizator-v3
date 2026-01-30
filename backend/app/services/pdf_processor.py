@@ -68,13 +68,13 @@ class PDFProcessor:
         pil_image.save(buffer, format="PNG")
         return buffer.getvalue()
 
-    def render_thumbnail(self, page_num: int, max_width: int = 400) -> bytes:
+    def render_thumbnail(self, page_num: int, max_width: int = 2480) -> bytes:
         """
         Render a thumbnail for a page.
 
         Args:
             page_num: Page number (0-indexed)
-            max_width: Maximum width in pixels
+            max_width: Maximum width in pixels (2480 = A4 at 300 DPI)
 
         Returns:
             PNG thumbnail as bytes

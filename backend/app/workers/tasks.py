@@ -5,10 +5,43 @@ from pathlib import Path
 from datetime import datetime
 import json
 import asyncio
+import signal
+from functools import wraps
 
 from app.config import get_settings
 
 settings = get_settings()
+
+# === SAFETY LIMITS TO PREVENT EXCESSIVE TOKEN CONSUMPTION ===
+MAX_PAGES_FOR_AI = 15  # Max pages to send to Vertex AI
+AI_TIMEOUT_SECONDS = 120  # Timeout per AI call (2 minutes)
+MAX_FILE_SIZE_MB = 30  # Max file size to process
+
+
+def timeout_handler(signum, frame):
+    raise TimeoutError("AI call exceeded timeout limit")
+
+
+def with_timeout(seconds):
+    """Decorator to add timeout to async functions run in sync context"""
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Set alarm signal
+            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(seconds)
+            try:
+                result = func(*args, **kwargs)
+                return result
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old_handler)
+
+        return wrapper
+
+    return decorator
+
 
 # Initialize Celery
 celery_app = Celery(
@@ -79,10 +112,23 @@ def process_document(self, job_id: str):
         # Get input file
         input_path = Path(settings.storage_path) / job.input_path
 
+        # Check file size limit
+        file_size_mb = input_path.stat().st_size / (1024 * 1024)
+        if file_size_mb > MAX_FILE_SIZE_MB:
+            raise ValueError(
+                f"Plik za duży: {file_size_mb:.1f}MB (max {MAX_FILE_SIZE_MB}MB)"
+            )
+
         # Process PDF
         with PDFProcessor(input_path) as processor:
             job.page_count = processor.page_count
             session.commit()
+
+            # Check page limit
+            if processor.page_count > MAX_PAGES_FOR_AI:
+                job.status = "review"
+                job.error_message = f"Uwaga: Dokument ma {processor.page_count} stron. AI przetworzy tylko pierwsze {MAX_PAGES_FOR_AI}."
+                session.commit()
 
             # Generate thumbnails
             thumbnails_dir = Path(settings.storage_path) / "thumbnails" / str(job.id)
@@ -96,22 +142,39 @@ def process_document(self, job_id: str):
             job.progress = 30
             session.commit()
 
-            # Load page images
-            page_images = [p.read_bytes() for p in page_paths]
+            # Load page images - LIMIT TO MAX_PAGES_FOR_AI
+            page_paths_limited = page_paths[:MAX_PAGES_FOR_AI]
+            page_images = [p.read_bytes() for p in page_paths_limited]
+
+            if len(page_paths) > MAX_PAGES_FOR_AI:
+                print(
+                    f"[SAFETY] Ograniczono z {len(page_paths)} do {MAX_PAGES_FOR_AI} stron"
+                )
 
         # Update status to analyzing
         job.status = "analyzing"
         job.progress = 40
         session.commit()
 
-        # Run async AI analysis
+        # Run async AI analysis with TIMEOUT protection
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+        # Set timeout based on page count (min 60s, max 180s)
+        dynamic_timeout = min(180, max(60, len(page_images) * 10))
+        print(f"[AI] Przetwarzam {len(page_images)} stron, timeout={dynamic_timeout}s")
+
         try:
+            # Set alarm for overall AI processing
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(dynamic_timeout * 3)  # 3 AI calls max
+
             # Detect sections
             sections_response = loop.run_until_complete(
-                vertex_ai_service.detect_sections(page_images)
+                asyncio.wait_for(
+                    vertex_ai_service.detect_sections(page_images),
+                    timeout=dynamic_timeout,
+                )
             )
             job.sections_json = json.dumps(
                 [s.model_dump() for s in sections_response.sections]
@@ -121,7 +184,10 @@ def process_document(self, job_id: str):
 
             # Detect sensitive data
             findings_response = loop.run_until_complete(
-                vertex_ai_service.detect_sensitive_data(page_images)
+                asyncio.wait_for(
+                    vertex_ai_service.detect_sensitive_data(page_images),
+                    timeout=dynamic_timeout,
+                )
             )
             job.findings_json = json.dumps(
                 [f.model_dump() for f in findings_response.findings]
@@ -132,14 +198,20 @@ def process_document(self, job_id: str):
             # Mode A: Extract Digital Twin
             if job.mode == "unify":
                 digital_twin = loop.run_until_complete(
-                    vertex_ai_service.extract_digital_twin(
-                        page_images, job.original_filename
+                    asyncio.wait_for(
+                        vertex_ai_service.extract_digital_twin(
+                            page_images, job.original_filename
+                        ),
+                        timeout=dynamic_timeout,
                     )
                 )
                 job.digital_twin_json = digital_twin.model_dump_json()
                 job.confidence = digital_twin.confidence
                 job.progress = 85
                 session.commit()
+
+            # Cancel alarm on success
+            signal.alarm(0)
         finally:
             loop.close()
 

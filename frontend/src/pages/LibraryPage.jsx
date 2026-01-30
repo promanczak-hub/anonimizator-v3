@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search, FileText } from 'lucide-react'
 import { jobs } from '../api/client'
 
 function LibraryPage() {
-    const [docs, setDocs] = useState([])
+    const [allDocs, setAllDocs] = useState([])
     const [loading, setLoading] = useState(true)
     const [query, setQuery] = useState('')
     const [statusFilter, setStatusFilter] = useState('')
@@ -14,14 +14,9 @@ function LibraryPage() {
     const fetchDocuments = async () => {
         setLoading(true)
         try {
-            const params = {}
-            if (query) params.query = query
-            if (statusFilter) params.status = statusFilter
-            if (modeFilter) params.mode = modeFilter
-
-            // For now, use jobs list as a substitute until documents are properly linked
-            const data = await jobs.list(params)
-            setDocs(data.items || [])
+            // Fetch all documents (no server-side filtering)
+            const data = await jobs.list({})
+            setAllDocs(data.items || [])
         } catch (err) {
             console.error('Error fetching documents:', err)
         }
@@ -30,12 +25,26 @@ function LibraryPage() {
 
     useEffect(() => {
         fetchDocuments()
-    }, [statusFilter, modeFilter])
+    }, [])
 
-    const handleSearch = (e) => {
-        e.preventDefault()
-        fetchDocuments()
-    }
+    // Client-side filtering - real-time as user types
+    const filteredDocs = useMemo(() => {
+        return allDocs.filter(doc => {
+            // Filter by search query (partial match, case-insensitive)
+            const searchLower = query.toLowerCase().trim()
+            const matchesQuery = !searchLower ||
+                doc.original_filename?.toLowerCase().includes(searchLower) ||
+                doc.description?.toLowerCase().includes(searchLower)
+
+            // Filter by status
+            const matchesStatus = !statusFilter || doc.status === statusFilter
+
+            // Filter by mode
+            const matchesMode = !modeFilter || doc.mode === modeFilter
+
+            return matchesQuery && matchesStatus && matchesMode
+        })
+    }, [allDocs, query, statusFilter, modeFilter])
 
     const formatDate = (dateStr) => {
         return new Date(dateStr).toLocaleDateString('pl-PL', {
@@ -53,12 +62,12 @@ function LibraryPage() {
         <div>
             <div className="flex items-center justify-between mb-md">
                 <h1>Biblioteka dokumentów</h1>
-                <span className="text-muted">{docs.length} dokumentów</span>
+                <span className="text-muted">{filteredDocs.length} dokumentów</span>
             </div>
 
             {/* Search and filters */}
             <div className="flex gap-md mb-md">
-                <form onSubmit={handleSearch} className="search-bar" style={{ flex: 1 }}>
+                <div className="search-bar" style={{ flex: 1 }}>
                     <input
                         type="text"
                         className="search-input"
@@ -67,10 +76,10 @@ function LibraryPage() {
                         onChange={(e) => setQuery(e.target.value)}
                         style={{ flex: 1 }}
                     />
-                    <button type="submit" className="btn btn-secondary" aria-label="Szukaj">
+                    <span className="btn btn-secondary" style={{ pointerEvents: 'none' }}>
                         <Search size={18} />
-                    </button>
-                </form>
+                    </span>
+                </div>
 
                 <select
                     value={statusFilter}
@@ -100,15 +109,15 @@ function LibraryPage() {
                 <div className="empty-state">
                     <p>Ładowanie...</p>
                 </div>
-            ) : docs.length === 0 ? (
+            ) : filteredDocs.length === 0 ? (
                 <div className="empty-state">
                     <FileText size={48} />
                     <h3>Brak dokumentów</h3>
-                    <p className="text-muted">Prześlij pierwszy dokument aby rozpocząć</p>
+                    <p className="text-muted">{query ? 'Nie znaleziono dokumentów pasujących do wyszukiwania' : 'Prześlij pierwszy dokument aby rozpocząć'}</p>
                 </div>
             ) : (
                 <div className="document-grid">
-                    {docs.map(doc => (
+                    {filteredDocs.map(doc => (
                         <div
                             key={doc.id}
                             className="document-card"

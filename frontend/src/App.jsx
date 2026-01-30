@@ -1,5 +1,5 @@
-import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
-import { Shield, FileText, FolderOpen, Plus } from 'lucide-react'
+import { BrowserRouter, Routes, Route, NavLink, Link } from 'react-router-dom'
+import { FileText, FolderOpen, Plus } from 'lucide-react'
 import HomePage from './pages/HomePage'
 import ProcessingPage from './pages/ProcessingPage'
 import LibraryPage from './pages/LibraryPage'
@@ -9,10 +9,10 @@ function App() {
         <BrowserRouter>
             <div className="app-container">
                 <header className="header">
-                    <div className="header-logo">
-                        <Shield size={28} />
-                        <span>Anonimizator</span>
-                    </div>
+                    <Link to="/" className="header-logo" style={{ textDecoration: 'none', cursor: 'pointer' }}>
+                        <img src="/express_logo.png" alt="Express Car Rental" style={{ height: 36 }} />
+                        <span style={{ marginLeft: 8, fontWeight: 600, color: 'var(--color-text-primary)' }}>Anonimizator</span>
+                    </Link>
 
                     <nav className="header-nav">
                         <NavLink to="/" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
