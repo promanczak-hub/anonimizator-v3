@@ -4,7 +4,7 @@ import {
     Download, FileText, Check,
     AlertTriangle, ZoomIn, ZoomOut,
     Trash2, Square, RotateCcw, Save,
-    Type, Replace, Plus, X
+    Type, Replace, Plus, X, Scissors
 } from 'lucide-react'
 import { jobs } from '../api/client'
 
@@ -31,6 +31,9 @@ function ProcessingPage() {
     const [newFind, setNewFind] = useState('')
     const [newReplace, setNewReplace] = useState('')
     const [newPage, setNewPage] = useState('all')
+
+    // Pages to delete
+    const [pagesToDelete, setPagesToDelete] = useState([])
 
     // Text blocks from backend (for text selection mode)
     const [textBlocks, setTextBlocks] = useState({})
@@ -285,6 +288,42 @@ function ProcessingPage() {
         setRendering(false)
     }
 
+    // Toggle page for deletion
+    const togglePageDelete = (pageIndex) => {
+        setPagesToDelete(prev =>
+            prev.includes(pageIndex)
+                ? prev.filter(p => p !== pageIndex)
+                : [...prev, pageIndex]
+        )
+    }
+
+    // Apply page deletions
+    const applyPageDeletions = async () => {
+        if (pagesToDelete.length === 0) return
+        if (!confirm(`Czy na pewno usunąć ${pagesToDelete.length} stron(y)?`)) return
+
+        setRendering(true)
+        try {
+            const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/jobs/${jobId}/delete-pages`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(pagesToDelete)
+            })
+            const result = await response.json()
+            if (result.status === 'ok') {
+                // Refresh job to get updated page count and thumbnails
+                const data = await jobs.get(jobId)
+                setJob(data)
+                setPagesToDelete([])
+                setRegions({}) // Clear regions as page indices changed
+                alert(`Usunięto ${result.deleted_pages.length} stron(y). Nowa liczba stron: ${result.new_page_count}`)
+            }
+        } catch (err) {
+            setError('Błąd usuwania stron')
+        }
+        setRendering(false)
+    }
+
     // Count total regions
     const totalRegions = Object.values(regions).reduce((sum, arr) => sum + arr.length, 0)
     const totalSelectedTexts = Object.values(selectedTexts).reduce((sum, arr) => sum + arr.length, 0)
@@ -489,8 +528,17 @@ function ProcessingPage() {
                         {/* All pages continuous scroll */}
                         <div className="pdf-scroll-container">
                             {Array.from({ length: job.page_count }).map((_, pageIndex) => (
-                                <div key={pageIndex} className="pdf-page-wrapper">
-                                    <div className="page-number">Strona {pageIndex + 1}</div>
+                                <div key={pageIndex} className={`pdf-page-wrapper ${pagesToDelete.includes(pageIndex) ? 'marked-for-delete' : ''}`}>
+                                    <div className="page-header">
+                                        <span className="page-number-label">Strona {pageIndex + 1}</span>
+                                        <button
+                                            className={`btn btn-icon btn-sm ${pagesToDelete.includes(pageIndex) ? 'btn-danger-active' : ''}`}
+                                            onClick={() => togglePageDelete(pageIndex)}
+                                            title={pagesToDelete.includes(pageIndex) ? 'Cofnij usunięcie strony' : 'Usuń całą stronę'}
+                                        >
+                                            <Scissors size={16} />
+                                        </button>
+                                    </div>
                                     <div className="canvas-wrapper" style={{ position: 'relative', display: 'inline-block' }}>
                                         <img
                                             ref={el => imageRefs.current[pageIndex] = el}
@@ -501,8 +549,9 @@ function ProcessingPage() {
                                                 width: `${zoom}%`,
                                                 display: 'block',
                                                 borderRadius: '4px',
-                                                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-                                                userSelect: 'none'
+                                                boxShadow: pagesToDelete.includes(pageIndex) ? '0 0 0 3px #ef4444' : '0 4px 12px rgba(0,0,0,0.3)',
+                                                userSelect: 'none',
+                                                opacity: pagesToDelete.includes(pageIndex) ? 0.5 : 1
                                             }}
                                             draggable={false}
                                         />
@@ -687,6 +736,36 @@ function ProcessingPage() {
                                 )}
                             </div>
                         )}
+
+                        {/* Pages to delete panel */}
+                        {pagesToDelete.length > 0 && (
+                            <div className="card mt-md" style={{ borderColor: '#ef4444' }}>
+                                <h4 className="mb-sm" style={{ color: '#ef4444' }}>
+                                    ✂️ Strony do usunięcia ({pagesToDelete.length})
+                                </h4>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
+                                    {pagesToDelete.sort((a, b) => a - b).map(pageNum => (
+                                        <span
+                                            key={pageNum}
+                                            className="badge badge-danger"
+                                            style={{ cursor: 'pointer' }}
+                                            onClick={() => togglePageDelete(pageNum)}
+                                            title="Kliknij aby cofnąć"
+                                        >
+                                            Strona {pageNum + 1} ×
+                                        </span>
+                                    ))}
+                                </div>
+                                <button
+                                    className="btn btn-danger w-full"
+                                    onClick={applyPageDeletions}
+                                    disabled={rendering}
+                                >
+                                    <Scissors size={16} />
+                                    {rendering ? 'Usuwanie...' : `Usuń ${pagesToDelete.length} stron(y)`}
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
@@ -743,6 +822,31 @@ function ProcessingPage() {
                     display: flex;
                     flex-direction: column;
                     align-items: center;
+                }
+                
+                .pdf-page-wrapper.marked-for-delete {
+                    opacity: 0.7;
+                }
+                
+                .page-header {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    margin-bottom: 8px;
+                }
+                
+                .page-number-label {
+                    font-size: 12px;
+                    color: var(--color-text-muted);
+                }
+                
+                .btn-danger-active {
+                    background: #ef4444 !important;
+                    color: white !important;
+                }
+                
+                .btn-danger-active:hover {
+                    background: #dc2626 !important;
                 }
                 
                 .page-number {

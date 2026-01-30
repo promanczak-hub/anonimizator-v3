@@ -369,6 +369,84 @@ async def text_replace(
     return {"status": "ok", "changes_count": len(changes_made), "changes": changes_made}
 
 
+@router.post("/{job_id}/delete-pages")
+async def delete_pages(
+    job_id: UUID,
+    pages: list[int] = [],
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Delete entire pages from PDF.
+
+    pages: list of 0-indexed page numbers to delete
+    """
+    job = await session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if not pages:
+        raise HTTPException(status_code=400, detail="No pages specified")
+
+    input_path = Path(settings.storage_path) / job.input_path
+    if not input_path.exists():
+        raise HTTPException(status_code=404, detail="PDF file not found")
+
+    import fitz
+
+    doc = fitz.open(str(input_path))
+    original_count = len(doc)
+
+    # Validate page numbers
+    invalid_pages = [p for p in pages if p < 0 or p >= original_count]
+    if invalid_pages:
+        doc.close()
+        raise HTTPException(
+            status_code=400, detail=f"Invalid page numbers: {invalid_pages}"
+        )
+
+    # Sort pages in reverse order to delete from end first (preserves indices)
+    pages_to_delete = sorted(set(pages), reverse=True)
+
+    for page_num in pages_to_delete:
+        doc.delete_page(page_num)
+
+    # Save modified PDF
+    output_dir = Path(settings.storage_path) / "outputs" / str(job.id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"pages_removed_{job.original_filename}"
+    doc.save(str(output_path))
+    new_count = len(doc)
+    doc.close()
+
+    # Update job
+    job.output_pdf_path = str(output_path.relative_to(settings.storage_path))
+    job.page_count = new_count
+    job.status = "done"
+    job.completed_at = datetime.utcnow()
+    await session.commit()
+
+    # Regenerate thumbnails for new PDF
+    from app.services.pdf_processor import PDFProcessor
+
+    thumbnails_dir = Path(settings.storage_path) / "thumbnails" / str(job.id)
+    # Clear old thumbnails
+    if thumbnails_dir.exists():
+        import shutil
+
+        shutil.rmtree(thumbnails_dir)
+    thumbnails_dir.mkdir(parents=True, exist_ok=True)
+
+    with PDFProcessor(output_path) as processor:
+        processor.generate_thumbnails(thumbnails_dir)
+
+    return {
+        "status": "ok",
+        "deleted_pages": sorted(pages),
+        "original_page_count": original_count,
+        "new_page_count": new_count,
+    }
+
+
 @router.post("/{job_id}/render")
 async def render_output(
     job_id: UUID,
