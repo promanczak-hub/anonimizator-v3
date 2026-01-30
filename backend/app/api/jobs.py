@@ -545,15 +545,16 @@ async def delete_blocks(
     for page in doc:
         page.apply_redactions()
 
-    # Save modified PDF
+    # Save modified PDF with garbage collection to truly remove data
     output_dir = Path(settings.storage_path) / "outputs" / str(job.id)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"blocks_removed_{job.original_filename}"
-    doc.save(str(output_path))
+    doc.save(str(output_path), garbage=3, deflate=True)
     doc.close()
 
-    # Update job
-    job.output_pdf_path = str(output_path.relative_to(settings.storage_path))
+    # Update job to point to new file (critical for subsequent operations)
+    job.input_path = str(output_path.relative_to(settings.storage_path))
+    job.output_pdf_path = job.input_path
     job.status = "done"
     job.completed_at = datetime.utcnow()
     await session.commit()
@@ -611,16 +612,17 @@ async def delete_pages(
     for page_num in pages_to_delete:
         doc.delete_page(page_num)
 
-    # Save modified PDF
+    # Save modified PDF with garbage collection
     output_dir = Path(settings.storage_path) / "outputs" / str(job.id)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"pages_removed_{job.original_filename}"
-    doc.save(str(output_path))
+    doc.save(str(output_path), garbage=3, deflate=True)
     new_count = len(doc)
     doc.close()
 
-    # Update job
-    job.output_pdf_path = str(output_path.relative_to(settings.storage_path))
+    # Update job to point to new file (critical for subsequent operations)
+    job.input_path = str(output_path.relative_to(settings.storage_path))
+    job.output_pdf_path = job.input_path
     job.page_count = new_count
     job.status = "done"
     job.completed_at = datetime.utcnow()

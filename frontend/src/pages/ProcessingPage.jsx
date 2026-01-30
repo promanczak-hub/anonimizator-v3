@@ -528,10 +528,10 @@ function ProcessingPage() {
                 const data = await jobs.get(jobId)
                 setJob(data)
                 setBlocksToDelete([])
+                setTextBlocks({}) // Clear text blocks to force re-fetch
                 alert(`Usunięto ${result.deleted_count} elementów`)
-
-                // Reload to refresh thumbnails
-                window.location.reload()
+            } else {
+                setError(result.detail || 'Błąd usuwania')
             }
         } catch (err) {
             setError('Błąd usuwania elementów')
