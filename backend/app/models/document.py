@@ -3,7 +3,7 @@
 from sqlmodel import SQLModel, Field
 from datetime import datetime
 from uuid import UUID, uuid4
-from typing import Literal, Optional
+from typing import Optional
 
 
 class DocumentBase(SQLModel):
@@ -21,11 +21,9 @@ class Document(DocumentBase, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
-    original_filename: str
-    mode: Literal["unify", "layout"]
-    status: Literal["queued", "processing", "review", "done", "failed"] = Field(
-        default="queued"
-    )
+    original_filename: str = Field(default="")
+    mode: str = Field(default="unify")
+    status: str = Field(default="queued")
 
     page_count: int = Field(default=0)
     file_size: int = Field(default=0)
