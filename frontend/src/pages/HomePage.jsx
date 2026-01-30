@@ -20,6 +20,7 @@ function HomePage() {
             setFile(droppedFile)
             setError(null)
         } else {
+            setFile(null)
             setError('Tylko pliki PDF są obsługiwane')
         }
     }
@@ -30,6 +31,8 @@ function HomePage() {
             setFile(selectedFile)
             setError(null)
         } else {
+            e.target.value = null
+            setFile(null)
             setError('Tylko pliki PDF są obsługiwane')
         }
     }
@@ -64,6 +67,15 @@ function HomePage() {
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        fileInputRef.current?.click()
+                    }
+                }}
+                role="button"
+                tabIndex={0}
+                aria-label="Wybierz plik PDF do anonimizacji"
             >
                 <input
                     type="file"
