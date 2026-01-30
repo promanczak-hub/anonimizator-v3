@@ -143,13 +143,26 @@ function ProcessingPage() {
     const handleMouseDown = useCallback((e, pageIndex) => {
         const pos = getMousePos(e, pageIndex)
 
-        // Check if clicked on delete button
+        // Check if clicked on delete button (× in corner) or USUŃ label
         const pageRegions = regions[pageIndex] || []
         for (let i = pageRegions.length - 1; i >= 0; i--) {
             const rect = pageRegions[i]
+
+            // Check × button (circle in top-right corner)
             const dx = pos.x - (rect.x + rect.width - 12)
             const dy = pos.y - (rect.y + 12)
             if (dx * dx + dy * dy < 144) { // 12px radius
+                // Delete this region
+                setRegions(prev => ({
+                    ...prev,
+                    [pageIndex]: prev[pageIndex].filter((_, idx) => idx !== i)
+                }))
+                return
+            }
+
+            // Check USUŃ label (bottom-left rectangle 70x20)
+            if (pos.x >= rect.x && pos.x <= rect.x + 70 &&
+                pos.y >= rect.y + rect.height - 20 && pos.y <= rect.y + rect.height) {
                 // Delete this region
                 setRegions(prev => ({
                     ...prev,
