@@ -65,43 +65,33 @@ function ProcessingPage() {
         // Draw existing regions for this page
         const pageRegions = regions[pageIndex] || []
         pageRegions.forEach(rect => {
-            // Red fill for removal area
-            ctx.fillStyle = 'rgba(239, 68, 68, 0.4)'
+            // WHITE FILL to cover content (this is what will be removed!)
+            ctx.fillStyle = 'white'
             ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
-            // Red striped pattern to indicate deletion
+
+            // Red border around removal area
             ctx.strokeStyle = '#ef4444'
-            ctx.lineWidth = 2
+            ctx.lineWidth = 3
             ctx.strokeRect(rect.x, rect.y, rect.width, rect.height)
-            // Diagonal lines pattern
-            ctx.save()
-            ctx.beginPath()
-            ctx.rect(rect.x, rect.y, rect.width, rect.height)
-            ctx.clip()
-            ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)'
-            ctx.lineWidth = 1
-            for (let i = -rect.height; i < rect.width + rect.height; i += 15) {
-                ctx.moveTo(rect.x + i, rect.y)
-                ctx.lineTo(rect.x + i + rect.height, rect.y + rect.height)
-            }
-            ctx.stroke()
-            ctx.restore()
-            // Delete icon in corner
+
+            // Delete icon in corner (red circle with ×)
             ctx.fillStyle = '#ef4444'
             ctx.beginPath()
-            ctx.arc(rect.x + rect.width - 12, rect.y + 12, 12, 0, 2 * Math.PI)
+            ctx.arc(rect.x + rect.width - 14, rect.y + 14, 14, 0, 2 * Math.PI)
             ctx.fill()
             ctx.fillStyle = 'white'
-            ctx.font = 'bold 16px sans-serif'
+            ctx.font = 'bold 18px sans-serif'
             ctx.textAlign = 'center'
             ctx.textBaseline = 'middle'
-            ctx.fillText('×', rect.x + rect.width - 12, rect.y + 12)
-            // Label
+            ctx.fillText('×', rect.x + rect.width - 14, rect.y + 14)
+
+            // USUŃ label at bottom
             ctx.fillStyle = '#ef4444'
-            ctx.fillRect(rect.x, rect.y + rect.height - 20, 70, 20)
+            ctx.fillRect(rect.x, rect.y + rect.height - 22, 75, 22)
             ctx.fillStyle = 'white'
-            ctx.font = '11px sans-serif'
+            ctx.font = 'bold 12px sans-serif'
             ctx.textAlign = 'left'
-            ctx.fillText('USUŃ', rect.x + 8, rect.y + rect.height - 7)
+            ctx.fillText('USUŃ', rect.x + 10, rect.y + rect.height - 8)
         })
 
         // Draw current rectangle being drawn (on the active page)
