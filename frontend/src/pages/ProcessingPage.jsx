@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
-import { Stage, Layer, Rect, Transformer } from 'react-konva'
 import {
     Download, FileText, Check,
     AlertTriangle, ChevronLeft, ChevronRight, ZoomIn, ZoomOut,
-    Trash2, Square, MousePointer, RotateCcw, Save
+    Trash2, Square, RotateCcw, Save
 } from 'lucide-react'
 import { jobs } from '../api/client'
 
@@ -19,16 +18,14 @@ function ProcessingPage() {
 
     // Drawing state
     const [isDrawing, setIsDrawing] = useState(false)
-    const [newRect, setNewRect] = useState(null)
+    const [drawStart, setDrawStart] = useState(null)
+    const [currentRect, setCurrentRect] = useState(null)
     const [regions, setRegions] = useState({}) // { pageIndex: [{ x, y, width, height, id }] }
-    const [selectedId, setSelectedId] = useState(null)
-    const [stageSize, setStageSize] = useState({ width: 800, height: 1100 })
-    const [imageLoaded, setImageLoaded] = useState(false)
 
     // Refs
-    const containerRef = useRef(null)
+    const canvasRef = useRef(null)
     const imageRef = useRef(null)
-    const transformerRef = useRef(null)
+    const containerRef = useRef(null)
 
     // Poll for job status
     useEffect(() => {
@@ -49,141 +46,155 @@ function ProcessingPage() {
         fetchJob()
     }, [jobId])
 
-    // Update stage size when image loads
+    // Redraw canvas when regions change or page changes
     useEffect(() => {
-        if (imageRef.current && imageLoaded) {
+        redrawCanvas()
+    }, [regions, currentPage, currentRect])
+
+    // Update canvas size when image loads
+    const handleImageLoad = useCallback(() => {
+        if (imageRef.current && canvasRef.current) {
             const img = imageRef.current
-            const containerWidth = containerRef.current?.clientWidth || 800
-            const scale = (containerWidth * zoom / 100) / img.naturalWidth
-            setStageSize({
-                width: img.naturalWidth * scale,
-                height: img.naturalHeight * scale
-            })
+            canvasRef.current.width = img.clientWidth
+            canvasRef.current.height = img.clientHeight
+            redrawCanvas()
         }
-    }, [imageLoaded, zoom, currentPage])
+    }, [])
 
-    // Update transformer when selection changes
-    useEffect(() => {
-        if (transformerRef.current) {
-            const stage = transformerRef.current.getStage()
-            const selectedNode = stage?.findOne('#' + selectedId)
-            if (selectedNode) {
-                transformerRef.current.nodes([selectedNode])
-            } else {
-                transformerRef.current.nodes([])
-            }
-            transformerRef.current.getLayer()?.batchDraw()
-        }
-    }, [selectedId])
+    const redrawCanvas = useCallback(() => {
+        const canvas = canvasRef.current
+        if (!canvas) return
 
-    const handleMouseDown = (e) => {
-        // Deselect if clicking on empty area
-        if (e.target === e.target.getStage()) {
-            setSelectedId(null)
-        }
+        const ctx = canvas.getContext('2d')
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-        // Start drawing if not clicking on a shape
-        if (e.target === e.target.getStage()) {
-            setIsDrawing(true)
-            const pos = e.target.getStage().getPointerPosition()
-            setNewRect({
-                x: pos.x,
-                y: pos.y,
-                width: 0,
-                height: 0,
-                id: `rect-${Date.now()}`
-            })
-        }
-    }
-
-    const handleMouseMove = (e) => {
-        if (!isDrawing || !newRect) return
-
-        const stage = e.target.getStage()
-        const pos = stage.getPointerPosition()
-
-        setNewRect({
-            ...newRect,
-            width: pos.x - newRect.x,
-            height: pos.y - newRect.y
+        // Draw existing regions for current page
+        const pageRegions = regions[currentPage] || []
+        pageRegions.forEach(rect => {
+            // Fill
+            ctx.fillStyle = 'rgba(239, 68, 68, 0.3)'
+            ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
+            // Border
+            ctx.strokeStyle = '#ef4444'
+            ctx.lineWidth = 2
+            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height)
+            // Delete button
+            ctx.fillStyle = '#ef4444'
+            ctx.beginPath()
+            ctx.arc(rect.x + rect.width - 10, rect.y + 10, 10, 0, 2 * Math.PI)
+            ctx.fill()
+            ctx.fillStyle = 'white'
+            ctx.font = 'bold 14px sans-serif'
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'middle'
+            ctx.fillText('×', rect.x + rect.width - 10, rect.y + 10)
         })
-    }
 
-    const handleMouseUp = () => {
-        if (!isDrawing || !newRect) {
-            setIsDrawing(false)
-            return
+        // Draw current rectangle being drawn
+        if (currentRect) {
+            ctx.fillStyle = 'rgba(139, 92, 246, 0.3)'
+            ctx.fillRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height)
+            ctx.strokeStyle = '#8b5cf6'
+            ctx.lineWidth = 2
+            ctx.setLineDash([5, 5])
+            ctx.strokeRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height)
+            ctx.setLineDash([])
+        }
+    }, [regions, currentPage, currentRect])
+
+    const getMousePos = useCallback((e) => {
+        const canvas = canvasRef.current
+        if (!canvas) return { x: 0, y: 0 }
+
+        const rect = canvas.getBoundingClientRect()
+        const scaleX = canvas.width / rect.width
+        const scaleY = canvas.height / rect.height
+
+        return {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY
+        }
+    }, [])
+
+    const handleMouseDown = useCallback((e) => {
+        const canvas = canvasRef.current
+        if (!canvas) return
+
+        const pos = getMousePos(e)
+
+        // Check if clicked on delete button
+        const pageRegions = regions[currentPage] || []
+        for (let i = pageRegions.length - 1; i >= 0; i--) {
+            const rect = pageRegions[i]
+            const dx = pos.x - (rect.x + rect.width - 10)
+            const dy = pos.y - (rect.y + 10)
+            if (dx * dx + dy * dy < 100) { // 10px radius
+                // Delete this region
+                setRegions(prev => ({
+                    ...prev,
+                    [currentPage]: prev[currentPage].filter((_, idx) => idx !== i)
+                }))
+                return
+            }
         }
 
-        // Normalize rectangle (handle negative dimensions)
-        let { x, y, width, height, id } = newRect
+        // Start drawing
+        setIsDrawing(true)
+        setDrawStart(pos)
+    }, [currentPage, regions, getMousePos])
+
+    const handleMouseMove = useCallback((e) => {
+        if (!isDrawing || !drawStart) return
+
+        const pos = getMousePos(e)
+
+        let x = drawStart.x
+        let y = drawStart.y
+        let width = pos.x - drawStart.x
+        let height = pos.y - drawStart.y
+
+        // Handle negative dimensions
         if (width < 0) {
-            x = x + width
+            x = pos.x
             width = Math.abs(width)
         }
         if (height < 0) {
-            y = y + height
+            y = pos.y
             height = Math.abs(height)
         }
 
+        setCurrentRect({ x, y, width, height })
+    }, [isDrawing, drawStart, getMousePos])
+
+    const handleMouseUp = useCallback(() => {
+        if (!isDrawing || !currentRect) {
+            setIsDrawing(false)
+            setDrawStart(null)
+            setCurrentRect(null)
+            return
+        }
+
         // Only save if big enough (at least 10x10 pixels)
-        if (width > 10 && height > 10) {
-            const normalized = { x, y, width, height, id }
+        if (currentRect.width > 10 && currentRect.height > 10) {
+            const newRegion = {
+                ...currentRect,
+                id: `rect-${Date.now()}`
+            }
             setRegions(prev => ({
                 ...prev,
-                [currentPage]: [...(prev[currentPage] || []), normalized]
+                [currentPage]: [...(prev[currentPage] || []), newRegion]
             }))
         }
 
         setIsDrawing(false)
-        setNewRect(null)
-    }
-
-    const deleteRegion = (pageIndex, regionId) => {
-        setRegions(prev => ({
-            ...prev,
-            [pageIndex]: (prev[pageIndex] || []).filter(r => r.id !== regionId)
-        }))
-        setSelectedId(null)
-    }
+        setDrawStart(null)
+        setCurrentRect(null)
+    }, [isDrawing, currentRect, currentPage])
 
     const clearCurrentPage = () => {
         setRegions(prev => ({
             ...prev,
             [currentPage]: []
-        }))
-        setSelectedId(null)
-    }
-
-    const handleTransformEnd = (e, regionId) => {
-        const node = e.target
-        const scaleX = node.scaleX()
-        const scaleY = node.scaleY()
-
-        // Reset scale and update dimensions
-        node.scaleX(1)
-        node.scaleY(1)
-
-        setRegions(prev => ({
-            ...prev,
-            [currentPage]: prev[currentPage].map(r =>
-                r.id === regionId ? {
-                    ...r,
-                    x: node.x(),
-                    y: node.y(),
-                    width: Math.max(10, node.width() * scaleX),
-                    height: Math.max(10, node.height() * scaleY)
-                } : r
-            )
-        }))
-    }
-
-    const handleDragEnd = (e, regionId) => {
-        setRegions(prev => ({
-            ...prev,
-            [currentPage]: prev[currentPage].map(r =>
-                r.id === regionId ? { ...r, x: e.target.x(), y: e.target.y() } : r
-            )
         }))
     }
 
@@ -197,6 +208,8 @@ function ProcessingPage() {
         try {
             // Convert pixel positions to percentages
             const regionDecisions = []
+            const canvas = canvasRef.current
+
             Object.entries(regions).forEach(([pageIdx, pageRegions]) => {
                 pageRegions.forEach(region => {
                     regionDecisions.push({
@@ -205,10 +218,10 @@ function ProcessingPage() {
                         action: 'remove',
                         page: parseInt(pageIdx),
                         bbox: {
-                            x: (region.x / stageSize.width) * 100,
-                            y: (region.y / stageSize.height) * 100,
-                            w: (region.width / stageSize.width) * 100,
-                            h: (region.height / stageSize.height) * 100
+                            x: (region.x / canvas.width) * 100,
+                            y: (region.y / canvas.height) * 100,
+                            w: (region.width / canvas.width) * 100,
+                            h: (region.height / canvas.height) * 100
                         }
                     })
                 })
@@ -338,110 +351,53 @@ function ProcessingPage() {
                             >
                                 <RotateCcw size={18} />
                             </button>
-                            {selectedId && (
-                                <button
-                                    className="btn btn-icon btn-danger"
-                                    onClick={() => deleteRegion(currentPage, selectedId)}
-                                    title="Usuń zaznaczony"
-                                >
-                                    <Trash2 size={18} />
-                                </button>
-                            )}
                             <span className="toolbar-info">
                                 {currentPageRegions.length} zaznaczeń na stronie {currentPage + 1}
                             </span>
                         </div>
 
                         {/* Canvas container */}
-                        <div className="canvas-container" style={{ position: 'relative' }}>
+                        <div className="canvas-wrapper" style={{ position: 'relative', display: 'inline-block' }}>
                             {/* Background image */}
                             <img
                                 ref={imageRef}
                                 src={jobs.getThumbnailUrl(jobId, currentPage)}
                                 alt={`Strona ${currentPage + 1}`}
-                                onLoad={() => setImageLoaded(true)}
+                                onLoad={handleImageLoad}
                                 style={{
                                     width: `${zoom}%`,
                                     display: 'block',
                                     borderRadius: '8px',
-                                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
+                                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                                    userSelect: 'none'
                                 }}
+                                draggable={false}
                             />
 
-                            {/* Konva Stage overlay */}
-                            {imageLoaded && (
-                                <Stage
-                                    width={stageSize.width}
-                                    height={stageSize.height}
-                                    onMouseDown={handleMouseDown}
-                                    onMouseMove={handleMouseMove}
-                                    onMouseUp={handleMouseUp}
-                                    onTouchStart={handleMouseDown}
-                                    onTouchMove={handleMouseMove}
-                                    onTouchEnd={handleMouseUp}
-                                    style={{
-                                        position: 'absolute',
-                                        top: 0,
-                                        left: 0,
-                                        cursor: 'crosshair'
-                                    }}
-                                >
-                                    <Layer>
-                                        {/* Existing rectangles */}
-                                        {currentPageRegions.map((rect) => (
-                                            <Rect
-                                                key={rect.id}
-                                                id={rect.id}
-                                                x={rect.x}
-                                                y={rect.y}
-                                                width={rect.width}
-                                                height={rect.height}
-                                                fill="rgba(239, 68, 68, 0.3)"
-                                                stroke="#ef4444"
-                                                strokeWidth={2}
-                                                draggable
-                                                onClick={() => setSelectedId(rect.id)}
-                                                onTap={() => setSelectedId(rect.id)}
-                                                onDragEnd={(e) => handleDragEnd(e, rect.id)}
-                                                onTransformEnd={(e) => handleTransformEnd(e, rect.id)}
-                                            />
-                                        ))}
-
-                                        {/* Currently drawing rectangle */}
-                                        {isDrawing && newRect && (
-                                            <Rect
-                                                x={newRect.x}
-                                                y={newRect.y}
-                                                width={newRect.width}
-                                                height={newRect.height}
-                                                fill="rgba(139, 92, 246, 0.3)"
-                                                stroke="#8b5cf6"
-                                                strokeWidth={2}
-                                                dash={[5, 5]}
-                                            />
-                                        )}
-
-                                        {/* Transformer for selected rectangle */}
-                                        <Transformer
-                                            ref={transformerRef}
-                                            boundBoxFunc={(oldBox, newBox) => {
-                                                // Limit minimum size
-                                                if (newBox.width < 10 || newBox.height < 10) {
-                                                    return oldBox
-                                                }
-                                                return newBox
-                                            }}
-                                        />
-                                    </Layer>
-                                </Stage>
-                            )}
+                            {/* Drawing canvas overlay */}
+                            <canvas
+                                ref={canvasRef}
+                                onMouseDown={handleMouseDown}
+                                onMouseMove={handleMouseMove}
+                                onMouseUp={handleMouseUp}
+                                onMouseLeave={handleMouseUp}
+                                style={{
+                                    position: 'absolute',
+                                    top: 0,
+                                    left: 0,
+                                    width: '100%',
+                                    height: '100%',
+                                    cursor: 'crosshair',
+                                    borderRadius: '8px'
+                                }}
+                            />
                         </div>
 
                         {/* Page controls */}
                         <div className="pdf-controls">
                             <button
                                 className="btn btn-icon"
-                                onClick={() => { setCurrentPage(p => Math.max(0, p - 1)); setSelectedId(null); setImageLoaded(false); }}
+                                onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
                                 disabled={currentPage === 0}
                             >
                                 <ChevronLeft size={20} />
@@ -451,7 +407,7 @@ function ProcessingPage() {
                             </span>
                             <button
                                 className="btn btn-icon"
-                                onClick={() => { setCurrentPage(p => Math.min(job.page_count - 1, p + 1)); setSelectedId(null); setImageLoaded(false); }}
+                                onClick={() => setCurrentPage(p => Math.min(job.page_count - 1, p + 1))}
                                 disabled={currentPage >= job.page_count - 1}
                             >
                                 <ChevronRight size={20} />
@@ -472,9 +428,8 @@ function ProcessingPage() {
                         <div className="card mb-md">
                             <h4 style={{ marginBottom: '8px' }}>📌 Instrukcja</h4>
                             <ol style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--color-text-muted)' }}>
-                                <li><strong>Kliknij i przeciągnij</strong> aby narysować prostokąt</li>
-                                <li><strong>Kliknij prostokąt</strong> aby go zaznaczyć i przeskalować</li>
-                                <li><strong>Przeciągnij prostokąt</strong> aby go przesunąć</li>
+                                <li><strong>Kliknij i przeciągnij</strong> na PDF</li>
+                                <li>Kliknij <strong>×</strong> na prostokącie aby usunąć</li>
                                 <li>Kliknij <strong>Generuj PDF</strong> gdy gotowe</li>
                             </ol>
                         </div>
@@ -491,12 +446,8 @@ function ProcessingPage() {
                                     {pageRegions.map((region, idx) => (
                                         <div
                                             key={region.id}
-                                            className={`region-item ${selectedId === region.id ? 'selected' : ''}`}
-                                            onClick={() => {
-                                                setCurrentPage(parseInt(pageIdx))
-                                                setSelectedId(region.id)
-                                                setImageLoaded(false)
-                                            }}
+                                            className="region-item"
+                                            onClick={() => setCurrentPage(parseInt(pageIdx))}
                                         >
                                             <span className="region-icon">
                                                 <Square size={14} />
@@ -511,7 +462,10 @@ function ProcessingPage() {
                                                 className="btn btn-icon btn-sm"
                                                 onClick={(e) => {
                                                     e.stopPropagation()
-                                                    deleteRegion(parseInt(pageIdx), region.id)
+                                                    setRegions(prev => ({
+                                                        ...prev,
+                                                        [pageIdx]: prev[pageIdx].filter((_, i) => i !== idx)
+                                                    }))
                                                 }}
                                             >
                                                 <Trash2 size={14} />
@@ -572,13 +526,8 @@ function ProcessingPage() {
                     margin-left: auto;
                 }
                 
-                .canvas-container {
-                    display: inline-block;
-                }
-                
-                .btn-danger {
-                    background: #ef4444 !important;
-                    color: white !important;
+                .canvas-wrapper {
+                    user-select: none;
                 }
                 
                 .region-group {
@@ -610,11 +559,6 @@ function ProcessingPage() {
                 
                 .region-item:hover {
                     background: var(--color-surface-hover);
-                }
-                
-                .region-item.selected {
-                    background: rgba(139, 92, 246, 0.1);
-                    border-left: 3px solid var(--color-primary);
                 }
                 
                 .region-icon {
