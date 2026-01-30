@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, FileText, Trash2, Download, Filter } from 'lucide-react'
-import { documents, jobs } from '../api/client'
+import { Search, FileText } from 'lucide-react'
+import { jobs } from '../api/client'
 
 function LibraryPage() {
     const [docs, setDocs] = useState([])
@@ -47,11 +47,6 @@ function LibraryPage() {
         })
     }
 
-    const formatSize = (bytes) => {
-        if (!bytes) return '-'
-        return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-    }
-
     return (
         <div>
             <div className="flex items-center justify-between mb-md">
@@ -70,7 +65,7 @@ function LibraryPage() {
                         onChange={(e) => setQuery(e.target.value)}
                         style={{ flex: 1 }}
                     />
-                    <button type="submit" className="btn btn-secondary">
+                    <button type="submit" className="btn btn-secondary" aria-label="Szukaj">
                         <Search size={18} />
                     </button>
                 </form>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import {
-    Download, FileText, Check,
+    Download,
     AlertTriangle, ZoomIn, ZoomOut,
     Trash2, Square, RotateCcw, Save,
     Type, Replace, Plus, X, Scissors
@@ -35,32 +35,38 @@ function ProcessingPage() {
     // Pages to delete
     const [pagesToDelete, setPagesToDelete] = useState([])
 
-    // Text blocks from backend (for text selection mode)
-    const [textBlocks, setTextBlocks] = useState({})
-    const [selectedTexts, setSelectedTexts] = useState({}) // { pageIndex: [{ text, bbox, id }] }
-
     // Refs for each page canvas
     const canvasRefs = useRef({})
     const imageRefs = useRef({})
     const containerRef = useRef(null)
+    const refreshTimeoutRef = useRef(null)
 
     // Poll for job status
     useEffect(() => {
+        let isMounted = true
         const fetchJob = async () => {
             try {
                 const data = await jobs.get(jobId)
+                if (!isMounted) return
                 setJob(data)
                 setLoading(false)
 
                 if (['queued', 'processing', 'analyzing'].includes(data.status)) {
-                    setTimeout(fetchJob, 2000)
+                    refreshTimeoutRef.current = setTimeout(fetchJob, 2000)
                 }
             } catch (err) {
+                if (!isMounted) return
                 setError(err.response?.data?.detail || 'Błąd ładowania')
                 setLoading(false)
             }
         }
         fetchJob()
+        return () => {
+            isMounted = false
+            if (refreshTimeoutRef.current) {
+                clearTimeout(refreshTimeoutRef.current)
+            }
+        }
     }, [jobId])
 
     // Redraw all canvases when regions change
@@ -237,7 +243,6 @@ function ProcessingPage() {
 
     const clearAllRegions = () => {
         setRegions({})
-        setSelectedTexts({})
         setReplacements([])
     }
 
@@ -326,8 +331,6 @@ function ProcessingPage() {
 
     // Count total regions
     const totalRegions = Object.values(regions).reduce((sum, arr) => sum + arr.length, 0)
-    const totalSelectedTexts = Object.values(selectedTexts).reduce((sum, arr) => sum + arr.length, 0)
-
     // Handle render
     const handleRender = async () => {
         setRendering(true)
