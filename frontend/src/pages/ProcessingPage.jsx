@@ -1,42 +1,34 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
+import { Stage, Layer, Rect, Transformer } from 'react-konva'
 import {
-    Download, FileText, Check, X, Eye, EyeOff,
+    Download, FileText, Check,
     AlertTriangle, ChevronLeft, ChevronRight, ZoomIn, ZoomOut,
     Trash2, Square, MousePointer, RotateCcw, Save
 } from 'lucide-react'
 import { jobs } from '../api/client'
-
-const TABS = ['Zaznaczenia', 'Wykrycia', 'Adnotacje', 'Audit']
-
-// Tool modes
-const TOOLS = {
-    SELECT: 'select',
-    DRAW: 'draw'
-}
 
 function ProcessingPage() {
     const { jobId } = useParams()
     const [job, setJob] = useState(null)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState(null)
-    const [activeTab, setActiveTab] = useState('Zaznaczenia')
     const [currentPage, setCurrentPage] = useState(0)
     const [zoom, setZoom] = useState(100)
     const [rendering, setRendering] = useState(false)
 
     // Drawing state
-    const [activeTool, setActiveTool] = useState(TOOLS.DRAW)
     const [isDrawing, setIsDrawing] = useState(false)
-    const [startPoint, setStartPoint] = useState(null)
-    const [currentRect, setCurrentRect] = useState(null)
-    const [userRegions, setUserRegions] = useState({}) // { pageIndex: [{ x, y, w, h, id }] }
-    const [selectedRegion, setSelectedRegion] = useState(null)
+    const [newRect, setNewRect] = useState(null)
+    const [regions, setRegions] = useState({}) // { pageIndex: [{ x, y, width, height, id }] }
+    const [selectedId, setSelectedId] = useState(null)
+    const [stageSize, setStageSize] = useState({ width: 800, height: 1100 })
+    const [imageLoaded, setImageLoaded] = useState(false)
 
     // Refs
-    const canvasRef = useRef(null)
     const containerRef = useRef(null)
     const imageRef = useRef(null)
+    const transformerRef = useRef(null)
 
     // Poll for job status
     useEffect(() => {
@@ -57,100 +49,167 @@ function ProcessingPage() {
         fetchJob()
     }, [jobId])
 
-    // Get mouse position relative to image
-    const getMousePos = useCallback((e) => {
-        if (!imageRef.current) return null
-        const rect = imageRef.current.getBoundingClientRect()
-        const x = ((e.clientX - rect.left) / rect.width) * 100
-        const y = ((e.clientY - rect.top) / rect.height) * 100
-        return { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) }
-    }, [])
+    // Update stage size when image loads
+    useEffect(() => {
+        if (imageRef.current && imageLoaded) {
+            const img = imageRef.current
+            const containerWidth = containerRef.current?.clientWidth || 800
+            const scale = (containerWidth * zoom / 100) / img.naturalWidth
+            setStageSize({
+                width: img.naturalWidth * scale,
+                height: img.naturalHeight * scale
+            })
+        }
+    }, [imageLoaded, zoom, currentPage])
 
-    // Start drawing
-    const handleMouseDown = useCallback((e) => {
-        if (activeTool !== TOOLS.DRAW) return
-        const pos = getMousePos(e)
-        if (!pos) return
+    // Update transformer when selection changes
+    useEffect(() => {
+        if (transformerRef.current) {
+            const stage = transformerRef.current.getStage()
+            const selectedNode = stage?.findOne('#' + selectedId)
+            if (selectedNode) {
+                transformerRef.current.nodes([selectedNode])
+            } else {
+                transformerRef.current.nodes([])
+            }
+            transformerRef.current.getLayer()?.batchDraw()
+        }
+    }, [selectedId])
 
-        setIsDrawing(true)
-        setStartPoint(pos)
-        setCurrentRect({ x: pos.x, y: pos.y, w: 0, h: 0 })
-    }, [activeTool, getMousePos])
+    const handleMouseDown = (e) => {
+        // Deselect if clicking on empty area
+        if (e.target === e.target.getStage()) {
+            setSelectedId(null)
+        }
 
-    // Continue drawing
-    const handleMouseMove = useCallback((e) => {
-        if (!isDrawing || !startPoint) return
-        const pos = getMousePos(e)
-        if (!pos) return
+        // Start drawing if not clicking on a shape
+        if (e.target === e.target.getStage()) {
+            setIsDrawing(true)
+            const pos = e.target.getStage().getPointerPosition()
+            setNewRect({
+                x: pos.x,
+                y: pos.y,
+                width: 0,
+                height: 0,
+                id: `rect-${Date.now()}`
+            })
+        }
+    }
 
-        const x = Math.min(startPoint.x, pos.x)
-        const y = Math.min(startPoint.y, pos.y)
-        const w = Math.abs(pos.x - startPoint.x)
-        const h = Math.abs(pos.y - startPoint.y)
+    const handleMouseMove = (e) => {
+        if (!isDrawing || !newRect) return
 
-        setCurrentRect({ x, y, w, h })
-    }, [isDrawing, startPoint, getMousePos])
+        const stage = e.target.getStage()
+        const pos = stage.getPointerPosition()
 
-    // Finish drawing
-    const handleMouseUp = useCallback(() => {
-        if (!isDrawing || !currentRect) {
+        setNewRect({
+            ...newRect,
+            width: pos.x - newRect.x,
+            height: pos.y - newRect.y
+        })
+    }
+
+    const handleMouseUp = () => {
+        if (!isDrawing || !newRect) {
             setIsDrawing(false)
             return
         }
 
-        // Only save if rectangle is big enough
-        if (currentRect.w > 1 && currentRect.h > 1) {
-            const newRegion = {
-                ...currentRect,
-                id: `region-${Date.now()}`,
-                page: currentPage
-            }
+        // Normalize rectangle (handle negative dimensions)
+        let { x, y, width, height, id } = newRect
+        if (width < 0) {
+            x = x + width
+            width = Math.abs(width)
+        }
+        if (height < 0) {
+            y = y + height
+            height = Math.abs(height)
+        }
 
-            setUserRegions(prev => ({
+        // Only save if big enough (at least 10x10 pixels)
+        if (width > 10 && height > 10) {
+            const normalized = { x, y, width, height, id }
+            setRegions(prev => ({
                 ...prev,
-                [currentPage]: [...(prev[currentPage] || []), newRegion]
+                [currentPage]: [...(prev[currentPage] || []), normalized]
             }))
         }
 
         setIsDrawing(false)
-        setStartPoint(null)
-        setCurrentRect(null)
-    }, [isDrawing, currentRect, currentPage])
+        setNewRect(null)
+    }
 
-    // Delete region
-    const deleteRegion = useCallback((pageIndex, regionId) => {
-        setUserRegions(prev => ({
+    const deleteRegion = (pageIndex, regionId) => {
+        setRegions(prev => ({
             ...prev,
             [pageIndex]: (prev[pageIndex] || []).filter(r => r.id !== regionId)
         }))
-        setSelectedRegion(null)
-    }, [])
+        setSelectedId(null)
+    }
 
-    // Clear all regions on current page
-    const clearCurrentPage = useCallback(() => {
-        setUserRegions(prev => ({
+    const clearCurrentPage = () => {
+        setRegions(prev => ({
             ...prev,
             [currentPage]: []
         }))
-    }, [currentPage])
+        setSelectedId(null)
+    }
+
+    const handleTransformEnd = (e, regionId) => {
+        const node = e.target
+        const scaleX = node.scaleX()
+        const scaleY = node.scaleY()
+
+        // Reset scale and update dimensions
+        node.scaleX(1)
+        node.scaleY(1)
+
+        setRegions(prev => ({
+            ...prev,
+            [currentPage]: prev[currentPage].map(r =>
+                r.id === regionId ? {
+                    ...r,
+                    x: node.x(),
+                    y: node.y(),
+                    width: Math.max(10, node.width() * scaleX),
+                    height: Math.max(10, node.height() * scaleY)
+                } : r
+            )
+        }))
+    }
+
+    const handleDragEnd = (e, regionId) => {
+        setRegions(prev => ({
+            ...prev,
+            [currentPage]: prev[currentPage].map(r =>
+                r.id === regionId ? { ...r, x: e.target.x(), y: e.target.y() } : r
+            )
+        }))
+    }
 
     // Count total regions
-    const totalRegions = Object.values(userRegions).reduce((sum, arr) => sum + arr.length, 0)
+    const totalRegions = Object.values(regions).reduce((sum, arr) => sum + arr.length, 0)
+    const currentPageRegions = regions[currentPage] || []
 
-    // Handle render with user regions
+    // Handle render
     const handleRender = async () => {
         setRendering(true)
         try {
-            // Convert user regions to decisions
+            // Convert pixel positions to percentages
             const regionDecisions = []
-            Object.entries(userRegions).forEach(([pageIdx, regions]) => {
-                regions.forEach(region => {
+            Object.entries(regions).forEach(([pageIdx, pageRegions]) => {
+                pageRegions.forEach(region => {
                     regionDecisions.push({
                         item_id: region.id,
                         item_type: 'user_region',
                         action: 'remove',
                         page: parseInt(pageIdx),
-                        bbox: { x: region.x, y: region.y, w: region.w, h: region.h }
+                        bbox: {
+                            x: (region.x / stageSize.width) * 100,
+                            y: (region.y / stageSize.height) * 100,
+                            w: (region.width / stageSize.width) * 100,
+                            h: (region.height / stageSize.height) * 100
+                        }
                     })
                 })
             })
@@ -197,14 +256,13 @@ function ProcessingPage() {
     const isProcessing = ['queued', 'processing', 'analyzing'].includes(job.status)
     const isReview = job.status === 'review'
     const isDone = job.status === 'done'
-    const currentPageRegions = userRegions[currentPage] || []
 
     return (
         <div>
             {/* Top bar */}
             <div className="flex items-center justify-between mb-md">
                 <div className="flex items-center gap-md">
-                    <h2>{job.original_filename}</h2>
+                    <h2 style={{ fontSize: '18px' }}>{job.original_filename}</h2>
                     <span className="status">
                         <span className={`status-dot ${job.status}`} />
                         {job.status === 'queued' && 'W kolejce'}
@@ -224,16 +282,14 @@ function ProcessingPage() {
 
                 <div className="flex gap-sm">
                     {isDone && (
-                        <>
-                            <a
-                                href={jobs.getDownloadUrl(jobId, 'pdf')}
-                                className="btn btn-primary"
-                                download
-                            >
-                                <Download size={18} />
-                                Pobierz PDF
-                            </a>
-                        </>
+                        <a
+                            href={jobs.getDownloadUrl(jobId, 'pdf')}
+                            className="btn btn-primary"
+                            download
+                        >
+                            <Download size={18} />
+                            Pobierz PDF
+                        </a>
                     )}
                     {isReview && (
                         <button
@@ -242,13 +298,13 @@ function ProcessingPage() {
                             disabled={rendering || totalRegions === 0}
                         >
                             <Save size={18} />
-                            {rendering ? 'Generowanie...' : `Generuj PDF (${totalRegions} zaznaczeń)`}
+                            {rendering ? 'Generowanie...' : `Generuj PDF (${totalRegions})`}
                         </button>
                     )}
                 </div>
             </div>
 
-            {/* Progress bar for processing */}
+            {/* Progress bar */}
             {isProcessing && (
                 <div className="card mb-md">
                     <div className="flex items-center justify-between mb-md">
@@ -256,34 +312,20 @@ function ProcessingPage() {
                         <span className="font-semibold">{job.progress}%</span>
                     </div>
                     <div className="progress-bar">
-                        <div
-                            className="progress-bar-fill"
-                            style={{ width: `${job.progress}%` }}
-                        />
+                        <div className="progress-bar-fill" style={{ width: `${job.progress}%` }} />
                     </div>
                 </div>
             )}
 
-            {/* Split view for review */}
+            {/* Main editor */}
             {(isReview || isDone) && (
                 <div className="split-view">
-                    {/* PDF Viewer with Canvas Overlay */}
-                    <div className="split-view-left">
-                        {/* Drawing toolbar */}
+                    {/* PDF Canvas */}
+                    <div className="split-view-left" ref={containerRef}>
+                        {/* Toolbar */}
                         <div className="drawing-toolbar">
                             <div className="toolbar-group">
-                                <button
-                                    className={`btn btn-icon ${activeTool === TOOLS.SELECT ? 'active' : ''}`}
-                                    onClick={() => setActiveTool(TOOLS.SELECT)}
-                                    title="Zaznacz (do edycji)"
-                                >
-                                    <MousePointer size={18} />
-                                </button>
-                                <button
-                                    className={`btn btn-icon ${activeTool === TOOLS.DRAW ? 'active' : ''}`}
-                                    onClick={() => setActiveTool(TOOLS.DRAW)}
-                                    title="Rysuj prostokąt do usunięcia"
-                                >
+                                <button className="btn btn-icon active" title="Rysuj prostokąt">
                                     <Square size={18} />
                                 </button>
                             </div>
@@ -296,98 +338,110 @@ function ProcessingPage() {
                             >
                                 <RotateCcw size={18} />
                             </button>
+                            {selectedId && (
+                                <button
+                                    className="btn btn-icon btn-danger"
+                                    onClick={() => deleteRegion(currentPage, selectedId)}
+                                    title="Usuń zaznaczony"
+                                >
+                                    <Trash2 size={18} />
+                                </button>
+                            )}
                             <span className="toolbar-info">
-                                {currentPageRegions.length} zaznaczeń na stronie
+                                {currentPageRegions.length} zaznaczeń na stronie {currentPage + 1}
                             </span>
                         </div>
 
-                        <div className="pdf-viewer" ref={containerRef}>
-                            {job.thumbnails?.map((_, idx) => {
-                                const isVisible = currentPage === idx
-                                const pageRegions = userRegions[idx] || []
+                        {/* Canvas container */}
+                        <div className="canvas-container" style={{ position: 'relative' }}>
+                            {/* Background image */}
+                            <img
+                                ref={imageRef}
+                                src={jobs.getThumbnailUrl(jobId, currentPage)}
+                                alt={`Strona ${currentPage + 1}`}
+                                onLoad={() => setImageLoaded(true)}
+                                style={{
+                                    width: `${zoom}%`,
+                                    display: 'block',
+                                    borderRadius: '8px',
+                                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
+                                }}
+                            />
 
-                                return (
-                                    <div
-                                        key={idx}
-                                        className="pdf-page-container"
-                                        style={{
-                                            width: `${zoom}%`,
-                                            display: isVisible ? 'block' : 'none',
-                                            position: 'relative',
-                                            cursor: activeTool === TOOLS.DRAW ? 'crosshair' : 'default'
-                                        }}
-                                        onMouseDown={handleMouseDown}
-                                        onMouseMove={handleMouseMove}
-                                        onMouseUp={handleMouseUp}
-                                        onMouseLeave={handleMouseUp}
-                                    >
-                                        <img
-                                            ref={idx === currentPage ? imageRef : null}
-                                            src={jobs.getThumbnailUrl(jobId, idx)}
-                                            alt={`Strona ${idx + 1}`}
-                                            style={{
-                                                width: '100%',
-                                                display: 'block',
-                                                userSelect: 'none',
-                                                pointerEvents: 'none'
-                                            }}
-                                            draggable={false}
-                                        />
-
-                                        {/* Saved regions */}
-                                        {pageRegions.map((region) => (
-                                            <div
-                                                key={region.id}
-                                                className={`user-region ${selectedRegion === region.id ? 'selected' : ''}`}
-                                                style={{
-                                                    position: 'absolute',
-                                                    left: `${region.x}%`,
-                                                    top: `${region.y}%`,
-                                                    width: `${region.w}%`,
-                                                    height: `${region.h}%`,
-                                                }}
-                                                onClick={(e) => {
-                                                    e.stopPropagation()
-                                                    if (activeTool === TOOLS.SELECT) {
-                                                        setSelectedRegion(region.id)
-                                                    }
-                                                }}
-                                            >
-                                                <button
-                                                    className="region-delete-btn"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation()
-                                                        deleteRegion(idx, region.id)
-                                                    }}
-                                                    title="Usuń zaznaczenie"
-                                                >
-                                                    <X size={14} />
-                                                </button>
-                                            </div>
+                            {/* Konva Stage overlay */}
+                            {imageLoaded && (
+                                <Stage
+                                    width={stageSize.width}
+                                    height={stageSize.height}
+                                    onMouseDown={handleMouseDown}
+                                    onMouseMove={handleMouseMove}
+                                    onMouseUp={handleMouseUp}
+                                    onTouchStart={handleMouseDown}
+                                    onTouchMove={handleMouseMove}
+                                    onTouchEnd={handleMouseUp}
+                                    style={{
+                                        position: 'absolute',
+                                        top: 0,
+                                        left: 0,
+                                        cursor: 'crosshair'
+                                    }}
+                                >
+                                    <Layer>
+                                        {/* Existing rectangles */}
+                                        {currentPageRegions.map((rect) => (
+                                            <Rect
+                                                key={rect.id}
+                                                id={rect.id}
+                                                x={rect.x}
+                                                y={rect.y}
+                                                width={rect.width}
+                                                height={rect.height}
+                                                fill="rgba(239, 68, 68, 0.3)"
+                                                stroke="#ef4444"
+                                                strokeWidth={2}
+                                                draggable
+                                                onClick={() => setSelectedId(rect.id)}
+                                                onTap={() => setSelectedId(rect.id)}
+                                                onDragEnd={(e) => handleDragEnd(e, rect.id)}
+                                                onTransformEnd={(e) => handleTransformEnd(e, rect.id)}
+                                            />
                                         ))}
 
-                                        {/* Current drawing rectangle */}
-                                        {isDrawing && currentRect && idx === currentPage && (
-                                            <div
-                                                className="drawing-rect"
-                                                style={{
-                                                    position: 'absolute',
-                                                    left: `${currentRect.x}%`,
-                                                    top: `${currentRect.y}%`,
-                                                    width: `${currentRect.w}%`,
-                                                    height: `${currentRect.h}%`,
-                                                }}
+                                        {/* Currently drawing rectangle */}
+                                        {isDrawing && newRect && (
+                                            <Rect
+                                                x={newRect.x}
+                                                y={newRect.y}
+                                                width={newRect.width}
+                                                height={newRect.height}
+                                                fill="rgba(139, 92, 246, 0.3)"
+                                                stroke="#8b5cf6"
+                                                strokeWidth={2}
+                                                dash={[5, 5]}
                                             />
                                         )}
-                                    </div>
-                                )
-                            })}
+
+                                        {/* Transformer for selected rectangle */}
+                                        <Transformer
+                                            ref={transformerRef}
+                                            boundBoxFunc={(oldBox, newBox) => {
+                                                // Limit minimum size
+                                                if (newBox.width < 10 || newBox.height < 10) {
+                                                    return oldBox
+                                                }
+                                                return newBox
+                                            }}
+                                        />
+                                    </Layer>
+                                </Stage>
+                            )}
                         </div>
 
+                        {/* Page controls */}
                         <div className="pdf-controls">
                             <button
                                 className="btn btn-icon"
-                                onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+                                onClick={() => { setCurrentPage(p => Math.max(0, p - 1)); setSelectedId(null); setImageLoaded(false); }}
                                 disabled={currentPage === 0}
                             >
                                 <ChevronLeft size={20} />
@@ -397,185 +451,90 @@ function ProcessingPage() {
                             </span>
                             <button
                                 className="btn btn-icon"
-                                onClick={() => setCurrentPage(p => Math.min(job.page_count - 1, p + 1))}
+                                onClick={() => { setCurrentPage(p => Math.min(job.page_count - 1, p + 1)); setSelectedId(null); setImageLoaded(false); }}
                                 disabled={currentPage >= job.page_count - 1}
                             >
                                 <ChevronRight size={20} />
                             </button>
-                            <div style={{ width: 1, height: 20, background: 'var(--color-border)', margin: '0 8px' }} />
+                            <div className="toolbar-divider" />
                             <button className="btn btn-icon" onClick={() => setZoom(z => Math.max(50, z - 25))}>
                                 <ZoomOut size={18} />
                             </button>
                             <span className="text-sm">{zoom}%</span>
-                            <button className="btn btn-icon" onClick={() => setZoom(z => Math.min(200, z + 25))}>
+                            <button className="btn btn-icon" onClick={() => setZoom(z => Math.min(150, z + 25))}>
                                 <ZoomIn size={18} />
                             </button>
                         </div>
                     </div>
 
-                    {/* Right panel */}
+                    {/* Right panel - Regions list */}
                     <div className="split-view-right">
-                        <div className="tabs">
-                            {TABS.map(tab => (
-                                <button
-                                    key={tab}
-                                    className={`tab ${activeTab === tab ? 'active' : ''}`}
-                                    onClick={() => setActiveTab(tab)}
-                                >
-                                    {tab}
-                                </button>
-                            ))}
+                        <div className="card mb-md">
+                            <h4 style={{ marginBottom: '8px' }}>📌 Instrukcja</h4>
+                            <ol style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--color-text-muted)' }}>
+                                <li><strong>Kliknij i przeciągnij</strong> aby narysować prostokąt</li>
+                                <li><strong>Kliknij prostokąt</strong> aby go zaznaczyć i przeskalować</li>
+                                <li><strong>Przeciągnij prostokąt</strong> aby go przesunąć</li>
+                                <li>Kliknij <strong>Generuj PDF</strong> gdy gotowe</li>
+                            </ol>
                         </div>
 
-                        {/* Zaznaczenia tab */}
-                        {activeTab === 'Zaznaczenia' && (
-                            <div className="flex flex-col gap-sm">
-                                <div className="card mb-md" style={{ background: 'var(--color-surface)' }}>
-                                    <h4 style={{ marginBottom: '8px' }}>📌 Jak używać</h4>
-                                    <ol style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--color-text-muted)' }}>
-                                        <li>Wybierz narzędzie <strong>□ Prostokąt</strong></li>
-                                        <li>Narysuj obszar do usunięcia na PDF</li>
-                                        <li>Kliknij <strong>✕</strong> na zaznaczeniu aby usunąć</li>
-                                        <li>Kliknij <strong>Generuj PDF</strong> gdy gotowe</li>
-                                    </ol>
-                                </div>
+                        <h4 className="mb-sm">Obszary do usunięcia ({totalRegions})</h4>
 
-                                <h4>Twoje zaznaczenia ({totalRegions})</h4>
-
-                                {Object.entries(userRegions).map(([pageIdx, regions]) => (
-                                    regions.length > 0 && (
-                                        <div key={pageIdx} className="region-group">
-                                            <div className="region-group-header">
-                                                Strona {parseInt(pageIdx) + 1}
-                                                <span className="badge">{regions.length}</span>
-                                            </div>
-                                            {regions.map((region, idx) => (
-                                                <div
-                                                    key={region.id}
-                                                    className={`region-item ${selectedRegion === region.id ? 'selected' : ''}`}
-                                                    onClick={() => {
-                                                        setCurrentPage(parseInt(pageIdx))
-                                                        setSelectedRegion(region.id)
-                                                    }}
-                                                >
-                                                    <span className="region-icon">
-                                                        <Square size={14} />
-                                                    </span>
-                                                    <span className="region-label">
-                                                        Obszar {idx + 1}
-                                                    </span>
-                                                    <span className="region-size">
-                                                        {Math.round(region.w)}×{Math.round(region.h)}%
-                                                    </span>
-                                                    <button
-                                                        className="btn btn-icon btn-sm"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation()
-                                                            deleteRegion(parseInt(pageIdx), region.id)
-                                                        }}
-                                                    >
-                                                        <Trash2 size={14} />
-                                                    </button>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )
-                                ))}
-
-                                {totalRegions === 0 && (
-                                    <div className="empty-state" style={{ padding: '40px 20px' }}>
-                                        <Square size={32} style={{ opacity: 0.5 }} />
-                                        <p style={{ marginTop: '12px' }}>Brak zaznaczeń</p>
-                                        <p className="text-muted text-sm">
-                                            Narysuj prostokąty na PDF aby zaznaczyć<br />
-                                            obszary do usunięcia
-                                        </p>
+                        {Object.entries(regions).map(([pageIdx, pageRegions]) => (
+                            pageRegions.length > 0 && (
+                                <div key={pageIdx} className="region-group">
+                                    <div className="region-group-header">
+                                        Strona {parseInt(pageIdx) + 1}
+                                        <span className="badge">{pageRegions.length}</span>
                                     </div>
-                                )}
-                            </div>
-                        )}
+                                    {pageRegions.map((region, idx) => (
+                                        <div
+                                            key={region.id}
+                                            className={`region-item ${selectedId === region.id ? 'selected' : ''}`}
+                                            onClick={() => {
+                                                setCurrentPage(parseInt(pageIdx))
+                                                setSelectedId(region.id)
+                                                setImageLoaded(false)
+                                            }}
+                                        >
+                                            <span className="region-icon">
+                                                <Square size={14} />
+                                            </span>
+                                            <span className="region-label">
+                                                Obszar {idx + 1}
+                                            </span>
+                                            <span className="region-size">
+                                                {Math.round(region.width)}×{Math.round(region.height)}px
+                                            </span>
+                                            <button
+                                                className="btn btn-icon btn-sm"
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    deleteRegion(parseInt(pageIdx), region.id)
+                                                }}
+                                            >
+                                                <Trash2 size={14} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )
+                        ))}
 
-                        {/* Wykrycia tab - AI suggestions */}
-                        {activeTab === 'Wykrycia' && (
-                            <div className="flex flex-col gap-sm">
-                                <p className="text-muted text-sm mb-md">
-                                    AI wykryło następujące sekcje. Kliknij aby dodać do zaznaczeń.
+                        {totalRegions === 0 && (
+                            <div className="empty-state" style={{ padding: '40px 20px' }}>
+                                <Square size={32} style={{ opacity: 0.5 }} />
+                                <p style={{ marginTop: '12px' }}>Brak zaznaczeń</p>
+                                <p className="text-muted text-sm">
+                                    Narysuj prostokąty na PDF
                                 </p>
-                                {job.sections?.map(section => (
-                                    <div
-                                        key={section.id}
-                                        className="fiszka"
-                                        style={{ cursor: 'pointer' }}
-                                        onClick={() => {
-                                            // Add section as region (approximate)
-                                            const pageIdx = (section.page_range?.[0] || 1) - 1
-                                            const newRegion = {
-                                                x: 5,
-                                                y: 10,
-                                                w: 90,
-                                                h: 15,
-                                                id: `ai-${section.id}-${Date.now()}`,
-                                                page: pageIdx,
-                                                label: section.title
-                                            }
-                                            setUserRegions(prev => ({
-                                                ...prev,
-                                                [pageIdx]: [...(prev[pageIdx] || []), newRegion]
-                                            }))
-                                            setCurrentPage(pageIdx)
-                                        }}
-                                    >
-                                        <div className="fiszka-content">
-                                            <div className="fiszka-title">{section.title}</div>
-                                            <div className="fiszka-description">
-                                                {section.category} • Strony {section.page_range?.[0]}-{section.page_range?.[1]}
-                                            </div>
-                                        </div>
-                                        <button className="btn btn-icon btn-sm" title="Dodaj do zaznaczeń">
-                                            <Square size={14} />
-                                        </button>
-                                    </div>
-                                ))}
-                                {(!job.sections || job.sections.length === 0) && (
-                                    <div className="empty-state">
-                                        <Check size={32} />
-                                        <p>Brak wykrytych sekcji</p>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {/* Adnotacje tab */}
-                        {activeTab === 'Adnotacje' && (
-                            <div className="card">
-                                <h3 className="mb-md">Moje uwagi</h3>
-                                <textarea
-                                    placeholder="Dodaj uwagi do dokumentu..."
-                                    rows={6}
-                                    style={{ width: '100%', resize: 'vertical' }}
-                                />
-                            </div>
-                        )}
-
-                        {/* Audit tab */}
-                        {activeTab === 'Audit' && (
-                            <div className="card">
-                                <h3 className="mb-md">Informacje o dokumencie</h3>
-                                <div className="text-muted text-sm">
-                                    <p>Dokument: {job.original_filename}</p>
-                                    <p>Tryb: {job.mode === 'unify' ? 'Unifikacja' : 'Redakcja'}</p>
-                                    <p>Stron: {job.page_count}</p>
-                                    <p>Sekcji AI: {job.sections?.length || 0}</p>
-                                    <p>Twoich zaznaczeń: {totalRegions}</p>
-                                    <p>Utworzono: {new Date(job.created_at).toLocaleString('pl-PL')}</p>
-                                </div>
                             </div>
                         )}
                     </div>
                 </div>
             )}
 
-            {/* Styles */}
             <style>{`
                 .drawing-toolbar {
                     display: flex;
@@ -613,65 +572,20 @@ function ProcessingPage() {
                     margin-left: auto;
                 }
                 
-                .pdf-page-container {
-                    border-radius: 8px;
-                    overflow: hidden;
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                .canvas-container {
+                    display: inline-block;
                 }
                 
-                .user-region {
-                    background: rgba(239, 68, 68, 0.25);
-                    border: 2px solid rgba(239, 68, 68, 0.8);
-                    border-radius: 4px;
-                    cursor: pointer;
-                    transition: all 0.15s ease;
-                }
-                
-                .user-region:hover {
-                    background: rgba(239, 68, 68, 0.35);
-                    border-color: #ef4444;
-                }
-                
-                .user-region.selected {
-                    border-color: #ef4444;
-                    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.3);
-                }
-                
-                .region-delete-btn {
-                    position: absolute;
-                    top: -10px;
-                    right: -10px;
-                    width: 22px;
-                    height: 22px;
-                    border-radius: 50%;
-                    background: #ef4444;
-                    color: white;
-                    border: 2px solid white;
-                    cursor: pointer;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    opacity: 0;
-                    transition: opacity 0.15s ease;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-                }
-                
-                .user-region:hover .region-delete-btn,
-                .user-region.selected .region-delete-btn {
-                    opacity: 1;
-                }
-                
-                .drawing-rect {
-                    background: rgba(139, 92, 246, 0.3);
-                    border: 2px dashed rgba(139, 92, 246, 0.8);
-                    border-radius: 4px;
-                    pointer-events: none;
+                .btn-danger {
+                    background: #ef4444 !important;
+                    color: white !important;
                 }
                 
                 .region-group {
                     background: var(--color-surface);
                     border-radius: 8px;
                     overflow: hidden;
+                    margin-bottom: 8px;
                 }
                 
                 .region-group-header {
