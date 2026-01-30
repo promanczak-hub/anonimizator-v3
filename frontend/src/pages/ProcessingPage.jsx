@@ -1,20 +1,18 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import {
     Download, FileText, Check, X, Eye, EyeOff,
-    AlertTriangle, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Trash2
+    AlertTriangle, ChevronLeft, ChevronRight, ZoomIn, ZoomOut,
+    Trash2, Square, MousePointer, RotateCcw, Save
 } from 'lucide-react'
 import { jobs } from '../api/client'
 
-// Tab components
-const TABS = ['Fiszki', 'Wykrycia', 'Adnotacje', 'Audit']
+const TABS = ['Zaznaczenia', 'Wykrycia', 'Adnotacje', 'Audit']
 
-// Risk level colors for highlights
-const HIGHLIGHT_COLORS = {
-    HIGH: 'rgba(239, 68, 68, 0.3)',
-    MEDIUM: 'rgba(251, 191, 36, 0.3)',
-    LOW: 'rgba(34, 197, 94, 0.3)',
-    DEFAULT: 'rgba(139, 92, 246, 0.3)'
+// Tool modes
+const TOOLS = {
+    SELECT: 'select',
+    DRAW: 'draw'
 }
 
 function ProcessingPage() {
@@ -22,18 +20,23 @@ function ProcessingPage() {
     const [job, setJob] = useState(null)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState(null)
-    const [activeTab, setActiveTab] = useState('Fiszki')
+    const [activeTab, setActiveTab] = useState('Zaznaczenia')
     const [currentPage, setCurrentPage] = useState(0)
     const [zoom, setZoom] = useState(100)
-    const [decisions, setDecisions] = useState({})
     const [rendering, setRendering] = useState(false)
 
-    // Hover state for highlighting
-    const [hoveredItem, setHoveredItem] = useState(null)
-    const [hoveredType, setHoveredType] = useState(null) // 'fiszka', 'finding', 'section'
+    // Drawing state
+    const [activeTool, setActiveTool] = useState(TOOLS.DRAW)
+    const [isDrawing, setIsDrawing] = useState(false)
+    const [startPoint, setStartPoint] = useState(null)
+    const [currentRect, setCurrentRect] = useState(null)
+    const [userRegions, setUserRegions] = useState({}) // { pageIndex: [{ x, y, w, h, id }] }
+    const [selectedRegion, setSelectedRegion] = useState(null)
 
-    // Ref for PDF container
-    const pdfContainerRef = useRef(null)
+    // Refs
+    const canvasRef = useRef(null)
+    const containerRef = useRef(null)
+    const imageRef = useRef(null)
 
     // Poll for job status
     useEffect(() => {
@@ -43,7 +46,6 @@ function ProcessingPage() {
                 setJob(data)
                 setLoading(false)
 
-                // Continue polling if still processing
                 if (['queued', 'processing', 'analyzing'].includes(data.status)) {
                     setTimeout(fetchJob, 2000)
                 }
@@ -52,153 +54,110 @@ function ProcessingPage() {
                 setLoading(false)
             }
         }
-
         fetchJob()
     }, [jobId])
 
-    // Handle hover on fiszka - highlight related findings on PDF
-    const handleFiszkaHover = (fiszka) => {
-        setHoveredItem(fiszka)
-        setHoveredType('fiszka')
+    // Get mouse position relative to image
+    const getMousePos = useCallback((e) => {
+        if (!imageRef.current) return null
+        const rect = imageRef.current.getBoundingClientRect()
+        const x = ((e.clientX - rect.left) / rect.width) * 100
+        const y = ((e.clientY - rect.top) / rect.height) * 100
+        return { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) }
+    }, [])
 
-        // Find first page with this category
-        const findings = job?.findings || []
-        const categoryFinding = findings.find(f => f.category === fiszka.category)
-        if (categoryFinding?.page) {
-            setCurrentPage(categoryFinding.page - 1)
+    // Start drawing
+    const handleMouseDown = useCallback((e) => {
+        if (activeTool !== TOOLS.DRAW) return
+        const pos = getMousePos(e)
+        if (!pos) return
+
+        setIsDrawing(true)
+        setStartPoint(pos)
+        setCurrentRect({ x: pos.x, y: pos.y, w: 0, h: 0 })
+    }, [activeTool, getMousePos])
+
+    // Continue drawing
+    const handleMouseMove = useCallback((e) => {
+        if (!isDrawing || !startPoint) return
+        const pos = getMousePos(e)
+        if (!pos) return
+
+        const x = Math.min(startPoint.x, pos.x)
+        const y = Math.min(startPoint.y, pos.y)
+        const w = Math.abs(pos.x - startPoint.x)
+        const h = Math.abs(pos.y - startPoint.y)
+
+        setCurrentRect({ x, y, w, h })
+    }, [isDrawing, startPoint, getMousePos])
+
+    // Finish drawing
+    const handleMouseUp = useCallback(() => {
+        if (!isDrawing || !currentRect) {
+            setIsDrawing(false)
+            return
         }
-    }
 
-    // Handle hover on finding - show exact location
-    const handleFindingHover = (finding) => {
-        setHoveredItem(finding)
-        setHoveredType('finding')
-        if (finding.page) {
-            setCurrentPage(finding.page - 1)
-        }
-    }
-
-    // Handle hover on section
-    const handleSectionHover = (section) => {
-        setHoveredItem(section)
-        setHoveredType('section')
-        if (section.page_range?.[0]) {
-            setCurrentPage(section.page_range[0] - 1)
-        }
-    }
-
-    const handleMouseLeave = () => {
-        setHoveredItem(null)
-        setHoveredType(null)
-    }
-
-    // Get highlights for current page
-    const getHighlightsForPage = (pageIndex) => {
-        if (!hoveredItem) return []
-
-        const highlights = []
-        const pageNum = pageIndex + 1
-
-        if (hoveredType === 'fiszka') {
-            // Highlight all findings of this category on this page
-            const findings = job?.findings || []
-            findings
-                .filter(f => f.category === hoveredItem.category && f.page === pageNum && f.bbox)
-                .forEach(f => {
-                    highlights.push({
-                        bbox: f.bbox,
-                        color: HIGHLIGHT_COLORS[hoveredItem.risk_level] || HIGHLIGHT_COLORS.DEFAULT,
-                        label: f.label || f.value_preview
-                    })
-                })
-
-            // Also highlight matching sections
-            const sections = job?.sections || []
-            sections
-                .filter(s => s.category === hoveredItem.category &&
-                    pageNum >= (s.page_range?.[0] || 0) && pageNum <= (s.page_range?.[1] || 0))
-                .forEach(s => {
-                    if (s.bbox) {
-                        highlights.push({
-                            bbox: s.bbox,
-                            color: HIGHLIGHT_COLORS[hoveredItem.risk_level] || HIGHLIGHT_COLORS.DEFAULT,
-                            label: s.title
-                        })
-                    } else {
-                        // Full page highlight if no bbox
-                        highlights.push({
-                            fullPage: true,
-                            color: HIGHLIGHT_COLORS[hoveredItem.risk_level] || HIGHLIGHT_COLORS.DEFAULT,
-                            label: s.title,
-                            category: s.category
-                        })
-                    }
-                })
-        } else if (hoveredType === 'finding' && hoveredItem.page === pageNum) {
-            if (hoveredItem.bbox) {
-                highlights.push({
-                    bbox: hoveredItem.bbox,
-                    color: HIGHLIGHT_COLORS.DEFAULT,
-                    label: hoveredItem.label
-                })
+        // Only save if rectangle is big enough
+        if (currentRect.w > 1 && currentRect.h > 1) {
+            const newRegion = {
+                ...currentRect,
+                id: `region-${Date.now()}`,
+                page: currentPage
             }
-        } else if (hoveredType === 'section') {
-            const { page_range } = hoveredItem
-            if (page_range && pageNum >= page_range[0] && pageNum <= page_range[1]) {
-                if (hoveredItem.bbox) {
-                    highlights.push({
-                        bbox: hoveredItem.bbox,
-                        color: HIGHLIGHT_COLORS.DEFAULT,
-                        label: hoveredItem.title
-                    })
-                } else {
-                    highlights.push({
-                        fullPage: true,
-                        color: HIGHLIGHT_COLORS.DEFAULT,
-                        label: hoveredItem.title,
-                        category: hoveredItem.category
-                    })
-                }
-            }
+
+            setUserRegions(prev => ({
+                ...prev,
+                [currentPage]: [...(prev[currentPage] || []), newRegion]
+            }))
         }
 
-        return highlights
-    }
+        setIsDrawing(false)
+        setStartPoint(null)
+        setCurrentRect(null)
+    }, [isDrawing, currentRect, currentPage])
 
-    const handleDecision = (itemId, action) => {
-        setDecisions(prev => ({ ...prev, [itemId]: action }))
-    }
+    // Delete region
+    const deleteRegion = useCallback((pageIndex, regionId) => {
+        setUserRegions(prev => ({
+            ...prev,
+            [pageIndex]: (prev[pageIndex] || []).filter(r => r.id !== regionId)
+        }))
+        setSelectedRegion(null)
+    }, [])
 
-    const handleCategoryAction = (category, action) => {
-        const findings = job?.findings || []
-        const categoryFindings = findings.filter(f => f.category === category)
-        const newDecisions = { ...decisions }
-        categoryFindings.forEach(f => {
-            newDecisions[f.id] = action
-        })
+    // Clear all regions on current page
+    const clearCurrentPage = useCallback(() => {
+        setUserRegions(prev => ({
+            ...prev,
+            [currentPage]: []
+        }))
+    }, [currentPage])
 
-        // Also mark sections
-        const sections = job?.sections || []
-        sections.filter(s => s.category === category).forEach(s => {
-            newDecisions[s.id] = action
-        })
+    // Count total regions
+    const totalRegions = Object.values(userRegions).reduce((sum, arr) => sum + arr.length, 0)
 
-        setDecisions(newDecisions)
-    }
-
+    // Handle render with user regions
     const handleRender = async () => {
         setRendering(true)
         try {
-            const decisionsList = Object.entries(decisions).map(([itemId, action]) => ({
-                item_id: itemId,
-                item_type: 'finding',
-                action,
-            }))
+            // Convert user regions to decisions
+            const regionDecisions = []
+            Object.entries(userRegions).forEach(([pageIdx, regions]) => {
+                regions.forEach(region => {
+                    regionDecisions.push({
+                        item_id: region.id,
+                        item_type: 'user_region',
+                        action: 'remove',
+                        page: parseInt(pageIdx),
+                        bbox: { x: region.x, y: region.y, w: region.w, h: region.h }
+                    })
+                })
+            })
 
-            await jobs.submitDecisions(jobId, { decisions: decisionsList })
+            await jobs.submitDecisions(jobId, { decisions: regionDecisions })
             await jobs.render(jobId)
 
-            // Poll for completion
             const checkDone = async () => {
                 const data = await jobs.get(jobId)
                 setJob(data)
@@ -213,13 +172,6 @@ function ProcessingPage() {
             setError('Błąd generowania pliku')
             setRendering(false)
         }
-    }
-
-    // Count items per category
-    const getCategoryCount = (category) => {
-        const findingsCount = (job?.findings || []).filter(f => f.category === category).length
-        const sectionsCount = (job?.sections || []).filter(s => s.category === category).length
-        return findingsCount + sectionsCount
     }
 
     if (loading) {
@@ -245,6 +197,7 @@ function ProcessingPage() {
     const isProcessing = ['queued', 'processing', 'analyzing'].includes(job.status)
     const isReview = job.status === 'review'
     const isDone = job.status === 'done'
+    const currentPageRegions = userRegions[currentPage] || []
 
     return (
         <div>
@@ -280,25 +233,16 @@ function ProcessingPage() {
                                 <Download size={18} />
                                 Pobierz PDF
                             </a>
-                            {job.mode === 'unify' && (
-                                <a
-                                    href={jobs.getDownloadUrl(jobId, 'json')}
-                                    className="btn btn-secondary"
-                                    download
-                                >
-                                    <FileText size={18} />
-                                    Digital Twin
-                                </a>
-                            )}
                         </>
                     )}
                     {isReview && (
                         <button
                             className="btn btn-primary"
                             onClick={handleRender}
-                            disabled={rendering}
+                            disabled={rendering || totalRegions === 0}
                         >
-                            {rendering ? 'Generowanie...' : 'Generuj PDF'}
+                            <Save size={18} />
+                            {rendering ? 'Generowanie...' : `Generuj PDF (${totalRegions} zaznaczeń)`}
                         </button>
                     )}
                 </div>
@@ -323,77 +267,118 @@ function ProcessingPage() {
             {/* Split view for review */}
             {(isReview || isDone) && (
                 <div className="split-view">
-                    {/* PDF Viewer */}
+                    {/* PDF Viewer with Canvas Overlay */}
                     <div className="split-view-left">
-                        <div className="pdf-viewer" ref={pdfContainerRef}>
+                        {/* Drawing toolbar */}
+                        <div className="drawing-toolbar">
+                            <div className="toolbar-group">
+                                <button
+                                    className={`btn btn-icon ${activeTool === TOOLS.SELECT ? 'active' : ''}`}
+                                    onClick={() => setActiveTool(TOOLS.SELECT)}
+                                    title="Zaznacz (do edycji)"
+                                >
+                                    <MousePointer size={18} />
+                                </button>
+                                <button
+                                    className={`btn btn-icon ${activeTool === TOOLS.DRAW ? 'active' : ''}`}
+                                    onClick={() => setActiveTool(TOOLS.DRAW)}
+                                    title="Rysuj prostokąt do usunięcia"
+                                >
+                                    <Square size={18} />
+                                </button>
+                            </div>
+                            <div className="toolbar-divider" />
+                            <button
+                                className="btn btn-icon"
+                                onClick={clearCurrentPage}
+                                title="Wyczyść stronę"
+                                disabled={currentPageRegions.length === 0}
+                            >
+                                <RotateCcw size={18} />
+                            </button>
+                            <span className="toolbar-info">
+                                {currentPageRegions.length} zaznaczeń na stronie
+                            </span>
+                        </div>
+
+                        <div className="pdf-viewer" ref={containerRef}>
                             {job.thumbnails?.map((_, idx) => {
-                                const highlights = getHighlightsForPage(idx)
-                                const isVisible = currentPage === idx || job.page_count <= 3
+                                const isVisible = currentPage === idx
+                                const pageRegions = userRegions[idx] || []
 
                                 return (
                                     <div
                                         key={idx}
-                                        className="pdf-page"
+                                        className="pdf-page-container"
                                         style={{
                                             width: `${zoom}%`,
                                             display: isVisible ? 'block' : 'none',
-                                            position: 'relative'
+                                            position: 'relative',
+                                            cursor: activeTool === TOOLS.DRAW ? 'crosshair' : 'default'
                                         }}
+                                        onMouseDown={handleMouseDown}
+                                        onMouseMove={handleMouseMove}
+                                        onMouseUp={handleMouseUp}
+                                        onMouseLeave={handleMouseUp}
                                     >
                                         <img
+                                            ref={idx === currentPage ? imageRef : null}
                                             src={jobs.getThumbnailUrl(jobId, idx)}
                                             alt={`Strona ${idx + 1}`}
-                                            style={{ width: '100%', display: 'block' }}
+                                            style={{
+                                                width: '100%',
+                                                display: 'block',
+                                                userSelect: 'none',
+                                                pointerEvents: 'none'
+                                            }}
+                                            draggable={false}
                                         />
 
-                                        {/* Highlight overlays */}
-                                        {highlights.map((hl, hlIdx) => (
+                                        {/* Saved regions */}
+                                        {pageRegions.map((region) => (
                                             <div
-                                                key={hlIdx}
-                                                className="pdf-highlight"
+                                                key={region.id}
+                                                className={`user-region ${selectedRegion === region.id ? 'selected' : ''}`}
                                                 style={{
                                                     position: 'absolute',
-                                                    ...(hl.fullPage ? {
-                                                        top: 0,
-                                                        left: 0,
-                                                        right: 0,
-                                                        bottom: 0,
-                                                    } : {
-                                                        left: `${hl.bbox?.x || 0}%`,
-                                                        top: `${hl.bbox?.y || 0}%`,
-                                                        width: `${hl.bbox?.w || 100}%`,
-                                                        height: `${hl.bbox?.h || 100}%`,
-                                                    }),
-                                                    backgroundColor: hl.color,
-                                                    border: `2px solid ${hl.color.replace('0.3', '0.8')}`,
-                                                    borderRadius: '4px',
-                                                    pointerEvents: 'none',
-                                                    transition: 'all 0.2s ease-in-out',
-                                                    animation: 'pulse-highlight 1.5s infinite'
+                                                    left: `${region.x}%`,
+                                                    top: `${region.y}%`,
+                                                    width: `${region.w}%`,
+                                                    height: `${region.h}%`,
+                                                }}
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    if (activeTool === TOOLS.SELECT) {
+                                                        setSelectedRegion(region.id)
+                                                    }
                                                 }}
                                             >
-                                                {hl.label && (
-                                                    <div
-                                                        className="pdf-highlight-label"
-                                                        style={{
-                                                            position: 'absolute',
-                                                            top: '-28px',
-                                                            left: '0',
-                                                            backgroundColor: hl.color.replace('0.3', '0.9'),
-                                                            color: 'white',
-                                                            padding: '4px 8px',
-                                                            borderRadius: '4px',
-                                                            fontSize: '12px',
-                                                            fontWeight: '500',
-                                                            whiteSpace: 'nowrap',
-                                                            boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
-                                                        }}
-                                                    >
-                                                        {hl.label}
-                                                    </div>
-                                                )}
+                                                <button
+                                                    className="region-delete-btn"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation()
+                                                        deleteRegion(idx, region.id)
+                                                    }}
+                                                    title="Usuń zaznaczenie"
+                                                >
+                                                    <X size={14} />
+                                                </button>
                                             </div>
                                         ))}
+
+                                        {/* Current drawing rectangle */}
+                                        {isDrawing && currentRect && idx === currentPage && (
+                                            <div
+                                                className="drawing-rect"
+                                                style={{
+                                                    position: 'absolute',
+                                                    left: `${currentRect.x}%`,
+                                                    top: `${currentRect.y}%`,
+                                                    width: `${currentRect.w}%`,
+                                                    height: `${currentRect.h}%`,
+                                                }}
+                                            />
+                                        )}
                                     </div>
                                 )
                             })}
@@ -442,195 +427,119 @@ function ProcessingPage() {
                             ))}
                         </div>
 
-                        {/* Fiszki tab */}
-                        {activeTab === 'Fiszki' && (
+                        {/* Zaznaczenia tab */}
+                        {activeTab === 'Zaznaczenia' && (
                             <div className="flex flex-col gap-sm">
-                                {job.fiszki?.map(fiszka => {
-                                    const count = getCategoryCount(fiszka.category)
-                                    const isHovered = hoveredItem?.id === fiszka.id
-                                    const categoryDecision = decisions[fiszka.id]
+                                <div className="card mb-md" style={{ background: 'var(--color-surface)' }}>
+                                    <h4 style={{ marginBottom: '8px' }}>📌 Jak używać</h4>
+                                    <ol style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--color-text-muted)' }}>
+                                        <li>Wybierz narzędzie <strong>□ Prostokąt</strong></li>
+                                        <li>Narysuj obszar do usunięcia na PDF</li>
+                                        <li>Kliknij <strong>✕</strong> na zaznaczeniu aby usunąć</li>
+                                        <li>Kliknij <strong>Generuj PDF</strong> gdy gotowe</li>
+                                    </ol>
+                                </div>
 
-                                    return (
-                                        <div
-                                            key={fiszka.id}
-                                            className={`fiszka ${isHovered ? 'fiszka-hovered' : ''}`}
-                                            onMouseEnter={() => handleFiszkaHover(fiszka)}
-                                            onMouseLeave={handleMouseLeave}
-                                            style={{
-                                                transition: 'all 0.2s ease',
-                                                cursor: 'pointer',
-                                                ...(isHovered && {
-                                                    transform: 'translateX(-4px)',
-                                                    boxShadow: '0 0 0 2px var(--color-primary)'
-                                                })
-                                            }}
-                                        >
-                                            <div className={`fiszka-indicator ${fiszka.risk_level.toLowerCase()}`} />
-                                            <div className="fiszka-content">
-                                                <div className="fiszka-title">{fiszka.label}</div>
-                                                <div className="fiszka-description">{fiszka.description}</div>
+                                <h4>Twoje zaznaczenia ({totalRegions})</h4>
+
+                                {Object.entries(userRegions).map(([pageIdx, regions]) => (
+                                    regions.length > 0 && (
+                                        <div key={pageIdx} className="region-group">
+                                            <div className="region-group-header">
+                                                Strona {parseInt(pageIdx) + 1}
+                                                <span className="badge">{regions.length}</span>
                                             </div>
-                                            <div className="fiszka-count">{count}</div>
-                                            <div className="fiszka-actions">
-                                                <button
-                                                    className={`btn btn-icon ${categoryDecision === 'remove' ? 'btn-danger' : ''}`}
-                                                    title="Usuń całkowicie"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation()
-                                                        handleCategoryAction(fiszka.category, 'remove')
-                                                        handleDecision(fiszka.id, 'remove')
+                                            {regions.map((region, idx) => (
+                                                <div
+                                                    key={region.id}
+                                                    className={`region-item ${selectedRegion === region.id ? 'selected' : ''}`}
+                                                    onClick={() => {
+                                                        setCurrentPage(parseInt(pageIdx))
+                                                        setSelectedRegion(region.id)
                                                     }}
                                                 >
-                                                    <Trash2 size={16} />
-                                                </button>
-                                                <button
-                                                    className={`btn btn-icon ${categoryDecision === 'mask' ? 'btn-warning' : ''}`}
-                                                    title="Zamaskuj"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation()
-                                                        handleCategoryAction(fiszka.category, 'mask')
-                                                        handleDecision(fiszka.id, 'mask')
-                                                    }}
-                                                >
-                                                    <EyeOff size={16} />
-                                                </button>
-                                                <button
-                                                    className={`btn btn-icon ${categoryDecision === 'keep' ? 'btn-success' : ''}`}
-                                                    title="Zachowaj"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation()
-                                                        handleCategoryAction(fiszka.category, 'keep')
-                                                        handleDecision(fiszka.id, 'keep')
-                                                    }}
-                                                >
-                                                    <Eye size={16} />
-                                                </button>
-                                            </div>
+                                                    <span className="region-icon">
+                                                        <Square size={14} />
+                                                    </span>
+                                                    <span className="region-label">
+                                                        Obszar {idx + 1}
+                                                    </span>
+                                                    <span className="region-size">
+                                                        {Math.round(region.w)}×{Math.round(region.h)}%
+                                                    </span>
+                                                    <button
+                                                        className="btn btn-icon btn-sm"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation()
+                                                            deleteRegion(parseInt(pageIdx), region.id)
+                                                        }}
+                                                    >
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                </div>
+                                            ))}
                                         </div>
                                     )
-                                })}
+                                ))}
 
-                                {/* Sections list */}
-                                {job.sections?.length > 0 && (
-                                    <>
-                                        <div className="text-sm text-muted mt-md mb-sm" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '12px' }}>
-                                            Wykryte sekcje ({job.sections.length})
-                                        </div>
-                                        {job.sections.map(section => {
-                                            const isHovered = hoveredItem?.id === section.id
-                                            const sectionDecision = decisions[section.id]
-
-                                            return (
-                                                <div
-                                                    key={section.id}
-                                                    className={`fiszka fiszka-section ${isHovered ? 'fiszka-hovered' : ''}`}
-                                                    onMouseEnter={() => handleSectionHover(section)}
-                                                    onMouseLeave={handleMouseLeave}
-                                                    style={{
-                                                        transition: 'all 0.2s ease',
-                                                        cursor: 'pointer',
-                                                        opacity: 0.9,
-                                                        ...(isHovered && {
-                                                            transform: 'translateX(-4px)',
-                                                            boxShadow: '0 0 0 2px var(--color-primary)',
-                                                            opacity: 1
-                                                        })
-                                                    }}
-                                                >
-                                                    <div className="fiszka-indicator" style={{ backgroundColor: 'var(--color-primary)' }} />
-                                                    <div className="fiszka-content">
-                                                        <div className="fiszka-title">{section.title}</div>
-                                                        <div className="fiszka-description">
-                                                            {section.category} • Strony {section.page_range?.[0]}-{section.page_range?.[1]}
-                                                        </div>
-                                                    </div>
-                                                    <div className="fiszka-actions">
-                                                        <button
-                                                            className={`btn btn-icon ${sectionDecision === 'remove' ? 'btn-danger' : ''}`}
-                                                            title="Usuń sekcję"
-                                                            onClick={(e) => {
-                                                                e.stopPropagation()
-                                                                handleDecision(section.id, 'remove')
-                                                            }}
-                                                        >
-                                                            <Trash2 size={16} />
-                                                        </button>
-                                                        <button
-                                                            className={`btn btn-icon ${sectionDecision === 'keep' ? 'btn-success' : ''}`}
-                                                            title="Zachowaj"
-                                                            onClick={(e) => {
-                                                                e.stopPropagation()
-                                                                handleDecision(section.id, 'keep')
-                                                            }}
-                                                        >
-                                                            <Eye size={16} />
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            )
-                                        })}
-                                    </>
+                                {totalRegions === 0 && (
+                                    <div className="empty-state" style={{ padding: '40px 20px' }}>
+                                        <Square size={32} style={{ opacity: 0.5 }} />
+                                        <p style={{ marginTop: '12px' }}>Brak zaznaczeń</p>
+                                        <p className="text-muted text-sm">
+                                            Narysuj prostokąty na PDF aby zaznaczyć<br />
+                                            obszary do usunięcia
+                                        </p>
+                                    </div>
                                 )}
                             </div>
                         )}
 
-                        {/* Wykrycia tab */}
+                        {/* Wykrycia tab - AI suggestions */}
                         {activeTab === 'Wykrycia' && (
                             <div className="flex flex-col gap-sm">
-                                {job.findings?.map(finding => {
-                                    const isHovered = hoveredItem?.id === finding.id
-
-                                    return (
-                                        <div
-                                            key={finding.id}
-                                            className={`fiszka ${isHovered ? 'fiszka-hovered' : ''}`}
-                                            onMouseEnter={() => handleFindingHover(finding)}
-                                            onMouseLeave={handleMouseLeave}
-                                            style={{
-                                                transition: 'all 0.2s ease',
-                                                cursor: 'pointer',
-                                                ...(isHovered && {
-                                                    transform: 'translateX(-4px)',
-                                                    boxShadow: '0 0 0 2px var(--color-primary)'
-                                                })
-                                            }}
-                                        >
-                                            <div className="fiszka-content">
-                                                <div className="fiszka-title">{finding.label}</div>
-                                                <div className="fiszka-description">
-                                                    {finding.value_preview} • Strona {finding.page}
-                                                </div>
-                                            </div>
-                                            <span className="badge badge-info">
-                                                {Math.round(finding.confidence * 100)}%
-                                            </span>
-                                            <div className="fiszka-actions">
-                                                <button
-                                                    className={`btn btn-icon ${decisions[finding.id] === 'remove' ? 'btn-danger' : ''}`}
-                                                    onClick={() => handleDecision(finding.id, 'remove')}
-                                                >
-                                                    <Trash2 size={16} />
-                                                </button>
-                                                <button
-                                                    className={`btn btn-icon ${decisions[finding.id] === 'mask' ? 'btn-warning' : ''}`}
-                                                    onClick={() => handleDecision(finding.id, 'mask')}
-                                                >
-                                                    <EyeOff size={16} />
-                                                </button>
-                                                <button
-                                                    className={`btn btn-icon ${decisions[finding.id] === 'keep' ? 'btn-success' : ''}`}
-                                                    onClick={() => handleDecision(finding.id, 'keep')}
-                                                >
-                                                    <Eye size={16} />
-                                                </button>
+                                <p className="text-muted text-sm mb-md">
+                                    AI wykryło następujące sekcje. Kliknij aby dodać do zaznaczeń.
+                                </p>
+                                {job.sections?.map(section => (
+                                    <div
+                                        key={section.id}
+                                        className="fiszka"
+                                        style={{ cursor: 'pointer' }}
+                                        onClick={() => {
+                                            // Add section as region (approximate)
+                                            const pageIdx = (section.page_range?.[0] || 1) - 1
+                                            const newRegion = {
+                                                x: 5,
+                                                y: 10,
+                                                w: 90,
+                                                h: 15,
+                                                id: `ai-${section.id}-${Date.now()}`,
+                                                page: pageIdx,
+                                                label: section.title
+                                            }
+                                            setUserRegions(prev => ({
+                                                ...prev,
+                                                [pageIdx]: [...(prev[pageIdx] || []), newRegion]
+                                            }))
+                                            setCurrentPage(pageIdx)
+                                        }}
+                                    >
+                                        <div className="fiszka-content">
+                                            <div className="fiszka-title">{section.title}</div>
+                                            <div className="fiszka-description">
+                                                {section.category} • Strony {section.page_range?.[0]}-{section.page_range?.[1]}
                                             </div>
                                         </div>
-                                    )
-                                })}
-                                {(!job.findings || job.findings.length === 0) && (
+                                        <button className="btn btn-icon btn-sm" title="Dodaj do zaznaczeń">
+                                            <Square size={14} />
+                                        </button>
+                                    </div>
+                                ))}
+                                {(!job.sections || job.sections.length === 0) && (
                                     <div className="empty-state">
                                         <Check size={32} />
-                                        <p>Brak wykrytych danych wrażliwych</p>
+                                        <p>Brak wykrytych sekcji</p>
                                     </div>
                                 )}
                             </div>
@@ -651,17 +560,14 @@ function ProcessingPage() {
                         {/* Audit tab */}
                         {activeTab === 'Audit' && (
                             <div className="card">
-                                <h3 className="mb-md">Historia zmian</h3>
+                                <h3 className="mb-md">Informacje o dokumencie</h3>
                                 <div className="text-muted text-sm">
                                     <p>Dokument: {job.original_filename}</p>
                                     <p>Tryb: {job.mode === 'unify' ? 'Unifikacja' : 'Redakcja'}</p>
                                     <p>Stron: {job.page_count}</p>
-                                    <p>Sekcji: {job.sections?.length || 0}</p>
-                                    <p>Wykryć: {job.findings?.length || 0}</p>
+                                    <p>Sekcji AI: {job.sections?.length || 0}</p>
+                                    <p>Twoich zaznaczeń: {totalRegions}</p>
                                     <p>Utworzono: {new Date(job.created_at).toLocaleString('pl-PL')}</p>
-                                    {job.completed_at && (
-                                        <p>Zakończono: {new Date(job.completed_at).toLocaleString('pl-PL')}</p>
-                                    )}
                                 </div>
                             </div>
                         )}
@@ -669,25 +575,152 @@ function ProcessingPage() {
                 </div>
             )}
 
-            {/* CSS for highlight animation */}
+            {/* Styles */}
             <style>{`
-                @keyframes pulse-highlight {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0.6; }
-                }
-                
-                .fiszka-hovered {
-                    background: var(--color-surface-hover) !important;
-                }
-                
-                .btn-success {
-                    background: var(--color-success) !important;
-                    color: white !important;
-                }
-                
-                .fiszka-section {
+                .drawing-toolbar {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    padding: 8px 12px;
                     background: var(--color-surface);
+                    border-radius: 8px;
+                    margin-bottom: 12px;
+                }
+                
+                .toolbar-group {
+                    display: flex;
+                    gap: 4px;
+                    background: var(--color-bg);
+                    padding: 4px;
+                    border-radius: 6px;
+                }
+                
+                .toolbar-group .btn-icon.active {
+                    background: var(--color-primary);
+                    color: white;
+                }
+                
+                .toolbar-divider {
+                    width: 1px;
+                    height: 24px;
+                    background: var(--color-border);
+                    margin: 0 4px;
+                }
+                
+                .toolbar-info {
+                    font-size: 13px;
+                    color: var(--color-text-muted);
+                    margin-left: auto;
+                }
+                
+                .pdf-page-container {
+                    border-radius: 8px;
+                    overflow: hidden;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                }
+                
+                .user-region {
+                    background: rgba(239, 68, 68, 0.25);
+                    border: 2px solid rgba(239, 68, 68, 0.8);
+                    border-radius: 4px;
+                    cursor: pointer;
+                    transition: all 0.15s ease;
+                }
+                
+                .user-region:hover {
+                    background: rgba(239, 68, 68, 0.35);
+                    border-color: #ef4444;
+                }
+                
+                .user-region.selected {
+                    border-color: #ef4444;
+                    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.3);
+                }
+                
+                .region-delete-btn {
+                    position: absolute;
+                    top: -10px;
+                    right: -10px;
+                    width: 22px;
+                    height: 22px;
+                    border-radius: 50%;
+                    background: #ef4444;
+                    color: white;
+                    border: 2px solid white;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    opacity: 0;
+                    transition: opacity 0.15s ease;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                }
+                
+                .user-region:hover .region-delete-btn,
+                .user-region.selected .region-delete-btn {
+                    opacity: 1;
+                }
+                
+                .drawing-rect {
+                    background: rgba(139, 92, 246, 0.3);
+                    border: 2px dashed rgba(139, 92, 246, 0.8);
+                    border-radius: 4px;
+                    pointer-events: none;
+                }
+                
+                .region-group {
+                    background: var(--color-surface);
+                    border-radius: 8px;
+                    overflow: hidden;
+                }
+                
+                .region-group-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 10px 12px;
+                    background: var(--color-bg);
+                    font-weight: 500;
+                    font-size: 13px;
+                }
+                
+                .region-item {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    padding: 10px 12px;
+                    border-top: 1px solid var(--color-border);
+                    cursor: pointer;
+                    transition: background 0.15s ease;
+                }
+                
+                .region-item:hover {
+                    background: var(--color-surface-hover);
+                }
+                
+                .region-item.selected {
+                    background: rgba(139, 92, 246, 0.1);
                     border-left: 3px solid var(--color-primary);
+                }
+                
+                .region-icon {
+                    color: #ef4444;
+                    display: flex;
+                }
+                
+                .region-label {
+                    flex: 1;
+                    font-size: 13px;
+                }
+                
+                .region-size {
+                    font-size: 11px;
+                    color: var(--color-text-muted);
+                    font-family: monospace;
+                }
+                
+                .btn-sm {
+                    padding: 4px;
                 }
             `}</style>
         </div>
