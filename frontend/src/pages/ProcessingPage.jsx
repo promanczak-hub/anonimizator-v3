@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import {
     Download, FileText, Check,
-    AlertTriangle, ChevronLeft, ChevronRight, ZoomIn, ZoomOut,
+    AlertTriangle, ZoomIn, ZoomOut,
     Trash2, Square, RotateCcw, Save
 } from 'lucide-react'
 import { jobs } from '../api/client'
@@ -12,19 +12,19 @@ function ProcessingPage() {
     const [job, setJob] = useState(null)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState(null)
-    const [currentPage, setCurrentPage] = useState(0)
     const [zoom, setZoom] = useState(100)
     const [rendering, setRendering] = useState(false)
 
-    // Drawing state
+    // Drawing state - now per page
     const [isDrawing, setIsDrawing] = useState(false)
+    const [drawingPage, setDrawingPage] = useState(null)
     const [drawStart, setDrawStart] = useState(null)
     const [currentRect, setCurrentRect] = useState(null)
     const [regions, setRegions] = useState({}) // { pageIndex: [{ x, y, width, height, id }] }
 
-    // Refs
-    const canvasRef = useRef(null)
-    const imageRef = useRef(null)
+    // Refs for each page canvas
+    const canvasRefs = useRef({})
+    const imageRefs = useRef({})
     const containerRef = useRef(null)
 
     // Poll for job status
@@ -46,52 +46,66 @@ function ProcessingPage() {
         fetchJob()
     }, [jobId])
 
-    // Redraw canvas when regions change or page changes
+    // Redraw all canvases when regions change
     useEffect(() => {
-        redrawCanvas()
-    }, [regions, currentPage, currentRect])
-
-    // Update canvas size when image loads
-    const handleImageLoad = useCallback(() => {
-        if (imageRef.current && canvasRef.current) {
-            const img = imageRef.current
-            canvasRef.current.width = img.clientWidth
-            canvasRef.current.height = img.clientHeight
-            redrawCanvas()
+        if (job) {
+            for (let i = 0; i < job.page_count; i++) {
+                redrawCanvas(i)
+            }
         }
-    }, [])
+    }, [regions, currentRect, drawingPage, job])
 
-    const redrawCanvas = useCallback(() => {
-        const canvas = canvasRef.current
+    const redrawCanvas = useCallback((pageIndex) => {
+        const canvas = canvasRefs.current[pageIndex]
         if (!canvas) return
 
         const ctx = canvas.getContext('2d')
         ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-        // Draw existing regions for current page
-        const pageRegions = regions[currentPage] || []
+        // Draw existing regions for this page
+        const pageRegions = regions[pageIndex] || []
         pageRegions.forEach(rect => {
-            // Fill
-            ctx.fillStyle = 'rgba(239, 68, 68, 0.3)'
+            // Red fill for removal area
+            ctx.fillStyle = 'rgba(239, 68, 68, 0.4)'
             ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
-            // Border
+            // Red striped pattern to indicate deletion
             ctx.strokeStyle = '#ef4444'
             ctx.lineWidth = 2
             ctx.strokeRect(rect.x, rect.y, rect.width, rect.height)
-            // Delete button
+            // Diagonal lines pattern
+            ctx.save()
+            ctx.beginPath()
+            ctx.rect(rect.x, rect.y, rect.width, rect.height)
+            ctx.clip()
+            ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)'
+            ctx.lineWidth = 1
+            for (let i = -rect.height; i < rect.width + rect.height; i += 15) {
+                ctx.moveTo(rect.x + i, rect.y)
+                ctx.lineTo(rect.x + i + rect.height, rect.y + rect.height)
+            }
+            ctx.stroke()
+            ctx.restore()
+            // Delete icon in corner
             ctx.fillStyle = '#ef4444'
             ctx.beginPath()
-            ctx.arc(rect.x + rect.width - 10, rect.y + 10, 10, 0, 2 * Math.PI)
+            ctx.arc(rect.x + rect.width - 12, rect.y + 12, 12, 0, 2 * Math.PI)
             ctx.fill()
             ctx.fillStyle = 'white'
-            ctx.font = 'bold 14px sans-serif'
+            ctx.font = 'bold 16px sans-serif'
             ctx.textAlign = 'center'
             ctx.textBaseline = 'middle'
-            ctx.fillText('×', rect.x + rect.width - 10, rect.y + 10)
+            ctx.fillText('×', rect.x + rect.width - 12, rect.y + 12)
+            // Label
+            ctx.fillStyle = '#ef4444'
+            ctx.fillRect(rect.x, rect.y + rect.height - 20, 70, 20)
+            ctx.fillStyle = 'white'
+            ctx.font = '11px sans-serif'
+            ctx.textAlign = 'left'
+            ctx.fillText('USUŃ', rect.x + 8, rect.y + rect.height - 7)
         })
 
-        // Draw current rectangle being drawn
-        if (currentRect) {
+        // Draw current rectangle being drawn (on the active page)
+        if (drawingPage === pageIndex && currentRect) {
             ctx.fillStyle = 'rgba(139, 92, 246, 0.3)'
             ctx.fillRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height)
             ctx.strokeStyle = '#8b5cf6'
@@ -100,10 +114,20 @@ function ProcessingPage() {
             ctx.strokeRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height)
             ctx.setLineDash([])
         }
-    }, [regions, currentPage, currentRect])
+    }, [regions, currentRect, drawingPage])
 
-    const getMousePos = useCallback((e) => {
-        const canvas = canvasRef.current
+    const handleImageLoad = useCallback((pageIndex) => {
+        const img = imageRefs.current[pageIndex]
+        const canvas = canvasRefs.current[pageIndex]
+        if (img && canvas) {
+            canvas.width = img.clientWidth
+            canvas.height = img.clientHeight
+            redrawCanvas(pageIndex)
+        }
+    }, [redrawCanvas])
+
+    const getMousePos = useCallback((e, pageIndex) => {
+        const canvas = canvasRefs.current[pageIndex]
         if (!canvas) return { x: 0, y: 0 }
 
         const rect = canvas.getBoundingClientRect()
@@ -116,23 +140,20 @@ function ProcessingPage() {
         }
     }, [])
 
-    const handleMouseDown = useCallback((e) => {
-        const canvas = canvasRef.current
-        if (!canvas) return
-
-        const pos = getMousePos(e)
+    const handleMouseDown = useCallback((e, pageIndex) => {
+        const pos = getMousePos(e, pageIndex)
 
         // Check if clicked on delete button
-        const pageRegions = regions[currentPage] || []
+        const pageRegions = regions[pageIndex] || []
         for (let i = pageRegions.length - 1; i >= 0; i--) {
             const rect = pageRegions[i]
-            const dx = pos.x - (rect.x + rect.width - 10)
-            const dy = pos.y - (rect.y + 10)
-            if (dx * dx + dy * dy < 100) { // 10px radius
+            const dx = pos.x - (rect.x + rect.width - 12)
+            const dy = pos.y - (rect.y + 12)
+            if (dx * dx + dy * dy < 144) { // 12px radius
                 // Delete this region
                 setRegions(prev => ({
                     ...prev,
-                    [currentPage]: prev[currentPage].filter((_, idx) => idx !== i)
+                    [pageIndex]: prev[pageIndex].filter((_, idx) => idx !== i)
                 }))
                 return
             }
@@ -140,13 +161,14 @@ function ProcessingPage() {
 
         // Start drawing
         setIsDrawing(true)
+        setDrawingPage(pageIndex)
         setDrawStart(pos)
-    }, [currentPage, regions, getMousePos])
+    }, [regions, getMousePos])
 
-    const handleMouseMove = useCallback((e) => {
-        if (!isDrawing || !drawStart) return
+    const handleMouseMove = useCallback((e, pageIndex) => {
+        if (!isDrawing || drawingPage !== pageIndex || !drawStart) return
 
-        const pos = getMousePos(e)
+        const pos = getMousePos(e, pageIndex)
 
         let x = drawStart.x
         let y = drawStart.y
@@ -164,13 +186,14 @@ function ProcessingPage() {
         }
 
         setCurrentRect({ x, y, width, height })
-    }, [isDrawing, drawStart, getMousePos])
+    }, [isDrawing, drawingPage, drawStart, getMousePos])
 
-    const handleMouseUp = useCallback(() => {
-        if (!isDrawing || !currentRect) {
+    const handleMouseUp = useCallback((pageIndex) => {
+        if (!isDrawing || drawingPage !== pageIndex || !currentRect) {
             setIsDrawing(false)
             setDrawStart(null)
             setCurrentRect(null)
+            setDrawingPage(null)
             return
         }
 
@@ -182,35 +205,33 @@ function ProcessingPage() {
             }
             setRegions(prev => ({
                 ...prev,
-                [currentPage]: [...(prev[currentPage] || []), newRegion]
+                [pageIndex]: [...(prev[pageIndex] || []), newRegion]
             }))
         }
 
         setIsDrawing(false)
         setDrawStart(null)
         setCurrentRect(null)
-    }, [isDrawing, currentRect, currentPage])
+        setDrawingPage(null)
+    }, [isDrawing, drawingPage, currentRect])
 
-    const clearCurrentPage = () => {
-        setRegions(prev => ({
-            ...prev,
-            [currentPage]: []
-        }))
+    const clearAllRegions = () => {
+        setRegions({})
     }
 
     // Count total regions
     const totalRegions = Object.values(regions).reduce((sum, arr) => sum + arr.length, 0)
-    const currentPageRegions = regions[currentPage] || []
 
     // Handle render
     const handleRender = async () => {
         setRendering(true)
         try {
-            // Convert pixel positions to percentages
             const regionDecisions = []
-            const canvas = canvasRef.current
 
             Object.entries(regions).forEach(([pageIdx, pageRegions]) => {
+                const canvas = canvasRefs.current[parseInt(pageIdx)]
+                if (!canvas) return
+
                 pageRegions.forEach(region => {
                     regionDecisions.push({
                         item_id: region.id,
@@ -286,11 +307,9 @@ function ProcessingPage() {
                         {job.status === 'done' && 'Gotowe'}
                         {job.status === 'failed' && 'Błąd'}
                     </span>
-                    {job.confidence > 0 && (
-                        <span className="badge badge-info">
-                            {Math.round(job.confidence * 100)}% pewności
-                        </span>
-                    )}
+                    <span className="badge badge-info">
+                        {job.page_count} stron
+                    </span>
                 </div>
 
                 <div className="flex gap-sm">
@@ -311,7 +330,7 @@ function ProcessingPage() {
                             disabled={rendering || totalRegions === 0}
                         >
                             <Save size={18} />
-                            {rendering ? 'Generowanie...' : `Generuj PDF (${totalRegions})`}
+                            {rendering ? 'Generowanie...' : `Generuj PDF (${totalRegions} usunięć)`}
                         </button>
                     )}
                 </div>
@@ -333,85 +352,27 @@ function ProcessingPage() {
             {/* Main editor */}
             {(isReview || isDone) && (
                 <div className="split-view">
-                    {/* PDF Canvas */}
+                    {/* PDF Continuous Scroll */}
                     <div className="split-view-left" ref={containerRef}>
                         {/* Toolbar */}
                         <div className="drawing-toolbar">
                             <div className="toolbar-group">
-                                <button className="btn btn-icon active" title="Rysuj prostokąt">
+                                <button className="btn btn-icon active" title="Rysuj prostokąt do usunięcia">
                                     <Square size={18} />
                                 </button>
                             </div>
                             <div className="toolbar-divider" />
                             <button
                                 className="btn btn-icon"
-                                onClick={clearCurrentPage}
-                                title="Wyczyść stronę"
-                                disabled={currentPageRegions.length === 0}
+                                onClick={clearAllRegions}
+                                title="Wyczyść wszystkie"
+                                disabled={totalRegions === 0}
                             >
                                 <RotateCcw size={18} />
                             </button>
                             <span className="toolbar-info">
-                                {currentPageRegions.length} zaznaczeń na stronie {currentPage + 1}
+                                {totalRegions} obszarów do usunięcia
                             </span>
-                        </div>
-
-                        {/* Canvas container */}
-                        <div className="canvas-wrapper" style={{ position: 'relative', display: 'inline-block' }}>
-                            {/* Background image */}
-                            <img
-                                ref={imageRef}
-                                src={jobs.getThumbnailUrl(jobId, currentPage)}
-                                alt={`Strona ${currentPage + 1}`}
-                                onLoad={handleImageLoad}
-                                style={{
-                                    width: `${zoom}%`,
-                                    display: 'block',
-                                    borderRadius: '8px',
-                                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                                    userSelect: 'none'
-                                }}
-                                draggable={false}
-                            />
-
-                            {/* Drawing canvas overlay */}
-                            <canvas
-                                ref={canvasRef}
-                                onMouseDown={handleMouseDown}
-                                onMouseMove={handleMouseMove}
-                                onMouseUp={handleMouseUp}
-                                onMouseLeave={handleMouseUp}
-                                style={{
-                                    position: 'absolute',
-                                    top: 0,
-                                    left: 0,
-                                    width: '100%',
-                                    height: '100%',
-                                    cursor: 'crosshair',
-                                    borderRadius: '8px'
-                                }}
-                            />
-                        </div>
-
-                        {/* Page controls */}
-                        <div className="pdf-controls">
-                            <button
-                                className="btn btn-icon"
-                                onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
-                                disabled={currentPage === 0}
-                            >
-                                <ChevronLeft size={20} />
-                            </button>
-                            <span className="text-sm">
-                                {currentPage + 1} / {job.page_count}
-                            </span>
-                            <button
-                                className="btn btn-icon"
-                                onClick={() => setCurrentPage(p => Math.min(job.page_count - 1, p + 1))}
-                                disabled={currentPage >= job.page_count - 1}
-                            >
-                                <ChevronRight size={20} />
-                            </button>
                             <div className="toolbar-divider" />
                             <button className="btn btn-icon" onClick={() => setZoom(z => Math.max(50, z - 25))}>
                                 <ZoomOut size={18} />
@@ -421,70 +382,111 @@ function ProcessingPage() {
                                 <ZoomIn size={18} />
                             </button>
                         </div>
+
+                        {/* All pages continuous scroll */}
+                        <div className="pdf-scroll-container">
+                            {Array.from({ length: job.page_count }).map((_, pageIndex) => (
+                                <div key={pageIndex} className="pdf-page-wrapper">
+                                    <div className="page-number">Strona {pageIndex + 1}</div>
+                                    <div className="canvas-wrapper" style={{ position: 'relative', display: 'inline-block' }}>
+                                        <img
+                                            ref={el => imageRefs.current[pageIndex] = el}
+                                            src={jobs.getThumbnailUrl(jobId, pageIndex)}
+                                            alt={`Strona ${pageIndex + 1}`}
+                                            onLoad={() => handleImageLoad(pageIndex)}
+                                            style={{
+                                                width: `${zoom}%`,
+                                                display: 'block',
+                                                borderRadius: '4px',
+                                                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                                                userSelect: 'none'
+                                            }}
+                                            draggable={false}
+                                        />
+                                        <canvas
+                                            ref={el => canvasRefs.current[pageIndex] = el}
+                                            onMouseDown={(e) => handleMouseDown(e, pageIndex)}
+                                            onMouseMove={(e) => handleMouseMove(e, pageIndex)}
+                                            onMouseUp={() => handleMouseUp(pageIndex)}
+                                            onMouseLeave={() => handleMouseUp(pageIndex)}
+                                            style={{
+                                                position: 'absolute',
+                                                top: 0,
+                                                left: 0,
+                                                width: '100%',
+                                                height: '100%',
+                                                cursor: 'crosshair',
+                                                borderRadius: '4px'
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
 
-                    {/* Right panel - Regions list */}
+                    {/* Right panel */}
                     <div className="split-view-right">
                         <div className="card mb-md">
                             <h4 style={{ marginBottom: '8px' }}>📌 Instrukcja</h4>
                             <ol style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--color-text-muted)' }}>
-                                <li><strong>Kliknij i przeciągnij</strong> na PDF</li>
-                                <li>Kliknij <strong>×</strong> na prostokącie aby usunąć</li>
-                                <li>Kliknij <strong>Generuj PDF</strong> gdy gotowe</li>
+                                <li><strong>Przewiń</strong> aby zobaczyć wszystkie strony</li>
+                                <li><strong>Narysuj prostokąt</strong> na obszarze do usunięcia</li>
+                                <li>Kliknij <strong>×</strong> aby cofnąć zaznaczenie</li>
+                                <li>Kliknij <strong>Generuj PDF</strong></li>
                             </ol>
                         </div>
 
-                        <h4 className="mb-sm">Obszary do usunięcia ({totalRegions})</h4>
+                        <div className="card">
+                            <h4 className="mb-sm">🗑️ Obszary do usunięcia ({totalRegions})</h4>
 
-                        {Object.entries(regions).map(([pageIdx, pageRegions]) => (
-                            pageRegions.length > 0 && (
-                                <div key={pageIdx} className="region-group">
-                                    <div className="region-group-header">
-                                        Strona {parseInt(pageIdx) + 1}
-                                        <span className="badge">{pageRegions.length}</span>
-                                    </div>
-                                    {pageRegions.map((region, idx) => (
-                                        <div
-                                            key={region.id}
-                                            className="region-item"
-                                            onClick={() => setCurrentPage(parseInt(pageIdx))}
-                                        >
-                                            <span className="region-icon">
-                                                <Square size={14} />
-                                            </span>
-                                            <span className="region-label">
-                                                Obszar {idx + 1}
-                                            </span>
-                                            <span className="region-size">
-                                                {Math.round(region.width)}×{Math.round(region.height)}px
-                                            </span>
-                                            <button
-                                                className="btn btn-icon btn-sm"
-                                                onClick={(e) => {
-                                                    e.stopPropagation()
-                                                    setRegions(prev => ({
-                                                        ...prev,
-                                                        [pageIdx]: prev[pageIdx].filter((_, i) => i !== idx)
-                                                    }))
-                                                }}
-                                            >
-                                                <Trash2 size={14} />
-                                            </button>
+                            {Object.entries(regions).map(([pageIdx, pageRegions]) => (
+                                pageRegions.length > 0 && (
+                                    <div key={pageIdx} className="region-group">
+                                        <div className="region-group-header">
+                                            Strona {parseInt(pageIdx) + 1}
+                                            <span className="badge">{pageRegions.length}</span>
                                         </div>
-                                    ))}
-                                </div>
-                            )
-                        ))}
+                                        {pageRegions.map((region, idx) => (
+                                            <div
+                                                key={region.id}
+                                                className="region-item"
+                                            >
+                                                <span className="region-icon">
+                                                    <Trash2 size={14} />
+                                                </span>
+                                                <span className="region-label">
+                                                    Obszar {idx + 1}
+                                                </span>
+                                                <span className="region-size">
+                                                    {Math.round(region.width)}×{Math.round(region.height)}
+                                                </span>
+                                                <button
+                                                    className="btn btn-icon btn-sm"
+                                                    onClick={() => {
+                                                        setRegions(prev => ({
+                                                            ...prev,
+                                                            [pageIdx]: prev[pageIdx].filter((_, i) => i !== idx)
+                                                        }))
+                                                    }}
+                                                >
+                                                    <Trash2 size={14} />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )
+                            ))}
 
-                        {totalRegions === 0 && (
-                            <div className="empty-state" style={{ padding: '40px 20px' }}>
-                                <Square size={32} style={{ opacity: 0.5 }} />
-                                <p style={{ marginTop: '12px' }}>Brak zaznaczeń</p>
-                                <p className="text-muted text-sm">
-                                    Narysuj prostokąty na PDF
-                                </p>
-                            </div>
-                        )}
+                            {totalRegions === 0 && (
+                                <div className="empty-state" style={{ padding: '30px 20px' }}>
+                                    <Square size={28} style={{ opacity: 0.5 }} />
+                                    <p style={{ marginTop: '8px', fontSize: '13px' }}>
+                                        Narysuj prostokąty na PDF aby oznaczyć obszary do usunięcia
+                                    </p>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}
@@ -495,15 +497,18 @@ function ProcessingPage() {
                     align-items: center;
                     gap: 8px;
                     padding: 8px 12px;
-                    background: var(--color-surface);
+                    background: var(--color-bg-tertiary);
                     border-radius: 8px;
                     margin-bottom: 12px;
+                    position: sticky;
+                    top: 0;
+                    z-index: 10;
                 }
                 
                 .toolbar-group {
                     display: flex;
                     gap: 4px;
-                    background: var(--color-bg);
+                    background: var(--color-bg-secondary);
                     padding: 4px;
                     border-radius: 6px;
                 }
@@ -526,12 +531,35 @@ function ProcessingPage() {
                     margin-left: auto;
                 }
                 
+                .pdf-scroll-container {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    gap: 24px;
+                    padding-bottom: 24px;
+                }
+                
+                .pdf-page-wrapper {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                }
+                
+                .page-number {
+                    font-size: 12px;
+                    color: var(--color-text-muted);
+                    margin-bottom: 8px;
+                    background: var(--color-bg-tertiary);
+                    padding: 4px 12px;
+                    border-radius: 4px;
+                }
+                
                 .canvas-wrapper {
                     user-select: none;
                 }
                 
                 .region-group {
-                    background: var(--color-surface);
+                    background: var(--color-bg-tertiary);
                     border-radius: 8px;
                     overflow: hidden;
                     margin-bottom: 8px;
@@ -542,9 +570,10 @@ function ProcessingPage() {
                     justify-content: space-between;
                     align-items: center;
                     padding: 10px 12px;
-                    background: var(--color-bg);
+                    background: rgba(239, 68, 68, 0.1);
                     font-weight: 500;
                     font-size: 13px;
+                    color: #ef4444;
                 }
                 
                 .region-item {
@@ -553,12 +582,6 @@ function ProcessingPage() {
                     gap: 10px;
                     padding: 10px 12px;
                     border-top: 1px solid var(--color-border);
-                    cursor: pointer;
-                    transition: background 0.15s ease;
-                }
-                
-                .region-item:hover {
-                    background: var(--color-surface-hover);
                 }
                 
                 .region-icon {
