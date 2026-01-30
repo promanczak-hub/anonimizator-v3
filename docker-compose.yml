@@ -24,12 +24,14 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/anonimizator
       - REDIS_URL=redis://redis:6379/0
       - GOOGLE_CLOUD_PROJECT=express-handlorz
+      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
       - WATCH_FOLDER=/app/watch
       - STORAGE_PATH=/app/storage
     volumes:
       - ./backend:/app
       - ./storage:/app/storage
       - ./watch:/app/watch
+      - ~/.config/gcloud:/root/.config/gcloud:ro
     depends_on:
       - postgres
       - redis

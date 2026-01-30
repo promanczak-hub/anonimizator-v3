@@ -33,9 +33,17 @@ def get_db_session():
     from sqlalchemy.orm import sessionmaker
     from sqlmodel import SQLModel
 
+    # Import ALL models to ensure foreign keys work
+    from app.models.job import Job
+    from app.models.document import Document
+
     # Convert async URL to sync
     sync_url = settings.database_url.replace("+asyncpg", "")
     engine = create_engine(sync_url)
+
+    # Create tables if needed
+    SQLModel.metadata.create_all(engine)
+
     Session = sessionmaker(bind=engine)
     return Session()
 
