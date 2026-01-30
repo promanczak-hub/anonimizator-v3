@@ -10,6 +10,7 @@ import { jobs } from '../api/client'
 
 function ProcessingPage() {
     const { jobId } = useParams()
+    const API_URL = import.meta.env.VITE_API_URL || ''
     const [job, setJob] = useState(null)
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState(null)
@@ -130,7 +131,7 @@ function ProcessingPage() {
         if (editMode === 'text' && job && Object.keys(textBlocks).length === 0) {
             const loadTextBlocks = async () => {
                 try {
-                    const response = await fetch(`/api/jobs/${job.id}/text-blocks`)
+                    const response = await fetch(`${API_URL}/api/jobs/${job.id}/text-blocks`)
                     if (response.ok) {
                         const data = await response.json()
                         const blocksMap = {}
@@ -1230,8 +1231,9 @@ function ProcessingPage() {
                         )}
                     </div>
                 </div>
+            )}
 
-                <style>{`
+            <style>{`
                 /* Image block styling */
                 .text-block.image-block:hover {
                     background-color: rgba(139, 92, 246, 0.1) !important;

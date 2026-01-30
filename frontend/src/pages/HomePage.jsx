@@ -11,29 +11,43 @@ function HomePage() {
     const [error, setError] = useState(null)
     const fileInputRef = useRef(null)
     const navigate = useNavigate()
+    const MAX_FILE_SIZE_MB = 30
+    const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+    const validateFile = (candidateFile) => {
+        if (!candidateFile || candidateFile.type !== 'application/pdf') {
+            return { valid: false, error: 'Tylko pliki PDF są obsługiwane' }
+        }
+        if (candidateFile.size > MAX_FILE_SIZE_BYTES) {
+            return { valid: false, error: `Maksymalny rozmiar pliku to ${MAX_FILE_SIZE_MB} MB` }
+        }
+        return { valid: true }
+    }
 
     const handleDrop = (e) => {
         e.preventDefault()
         setDragOver(false)
         const droppedFile = e.dataTransfer.files[0]
-        if (droppedFile?.type === 'application/pdf') {
+        const validation = validateFile(droppedFile)
+        if (validation.valid) {
             setFile(droppedFile)
             setError(null)
         } else {
             setFile(null)
-            setError('Tylko pliki PDF są obsługiwane')
+            setError(validation.error)
         }
     }
 
     const handleFileSelect = (e) => {
         const selectedFile = e.target.files[0]
-        if (selectedFile?.type === 'application/pdf') {
+        const validation = validateFile(selectedFile)
+        if (validation.valid) {
             setFile(selectedFile)
             setError(null)
         } else {
             e.target.value = null
             setFile(null)
-            setError('Tylko pliki PDF są obsługiwane')
+            setError(validation.error)
         }
     }
 
@@ -100,7 +114,7 @@ function HomePage() {
                             Przeciągnij plik PDF lub kliknij aby wybrać
                         </div>
                         <div className="upload-zone-subtitle">
-                            Maksymalny rozmiar: 50 MB
+                            Maksymalny rozmiar: {MAX_FILE_SIZE_MB} MB
                         </div>
                     </>
                 )}

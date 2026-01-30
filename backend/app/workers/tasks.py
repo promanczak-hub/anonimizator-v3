@@ -15,7 +15,7 @@ settings = get_settings()
 # === SAFETY LIMITS TO PREVENT EXCESSIVE TOKEN CONSUMPTION ===
 MAX_PAGES_FOR_AI = 15  # Max pages to send to Vertex AI
 AI_TIMEOUT_SECONDS = 120  # Timeout per AI call (2 minutes)
-MAX_FILE_SIZE_MB = 30  # Max file size to process
+MAX_FILE_SIZE_MB = settings.max_file_size_mb  # Max file size to process
 
 
 def timeout_handler(signum, frame):

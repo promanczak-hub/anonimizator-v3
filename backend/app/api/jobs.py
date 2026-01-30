@@ -60,6 +60,21 @@ async def create_job(
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
+    max_size_bytes = settings.max_file_size_mb * 1024 * 1024
+    if file.size is not None and file.size > max_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Plik za duży: {file.size / (1024 * 1024):.1f}MB (max {settings.max_file_size_mb}MB)",
+        )
+
+    content = await file.read()
+    file_size = len(content)
+    if file_size > max_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Plik za duży: {file_size / (1024 * 1024):.1f}MB (max {settings.max_file_size_mb}MB)",
+        )
+
     # Create job
     job = Job(
         mode=mode,
@@ -68,7 +83,7 @@ async def create_job(
         description=description,
         tags=tags,
         original_filename=file.filename,
-        file_size=file.size or 0,
+        file_size=file_size,
         status="queued",
     )
 
@@ -83,7 +98,6 @@ async def create_job(
     input_path = storage_dir / file.filename
 
     async with aiofiles.open(input_path, "wb") as f:
-        content = await file.read()
         await f.write(content)
 
     # Update job with file path
