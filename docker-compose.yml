@@ -1,0 +1,83 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/anonimizator
+      - REDIS_URL=redis://redis:6379/0
+      - GOOGLE_CLOUD_PROJECT=express-handlorz
+      - WATCH_FOLDER=/app/watch
+      - STORAGE_PATH=/app/storage
+    volumes:
+      - ./backend:/app
+      - ./storage:/app/storage
+      - ./watch:/app/watch
+    depends_on:
+      - postgres
+      - redis
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build: ./backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/anonimizator
+      - REDIS_URL=redis://redis:6379/0
+      - GOOGLE_CLOUD_PROJECT=express-handlorz
+      - WATCH_FOLDER=/app/watch
+      - STORAGE_PATH=/app/storage
+    volumes:
+      - ./backend:/app
+      - ./storage:/app/storage
+      - ./watch:/app/watch
+    depends_on:
+      - postgres
+      - redis
+    command: celery -A app.workers.tasks worker --loglevel=info
+
+  watcher:
+    build: ./backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/anonimizator
+      - REDIS_URL=redis://redis:6379/0
+      - WATCH_FOLDER=/app/watch
+    volumes:
+      - ./backend:/app
+      - ./watch:/app/watch
+    depends_on:
+      - backend
+      - redis
+    command: python -m app.services.watcher
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    command: npm run dev -- --host
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=anonimizator
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
