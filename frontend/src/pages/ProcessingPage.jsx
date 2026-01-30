@@ -3,7 +3,8 @@ import { useParams } from 'react-router-dom'
 import {
     Download, FileText, Check,
     AlertTriangle, ZoomIn, ZoomOut,
-    Trash2, Square, RotateCcw, Save
+    Trash2, Square, RotateCcw, Save,
+    Type, Replace, Plus, X
 } from 'lucide-react'
 import { jobs } from '../api/client'
 
@@ -15,12 +16,25 @@ function ProcessingPage() {
     const [zoom, setZoom] = useState(100)
     const [rendering, setRendering] = useState(false)
 
+    // Editing mode: 'rectangle', 'text', 'replace'
+    const [editMode, setEditMode] = useState('rectangle')
+
     // Drawing state - now per page
     const [isDrawing, setIsDrawing] = useState(false)
     const [drawingPage, setDrawingPage] = useState(null)
     const [drawStart, setDrawStart] = useState(null)
     const [currentRect, setCurrentRect] = useState(null)
     const [regions, setRegions] = useState({}) // { pageIndex: [{ x, y, width, height, id }] }
+
+    // Text replacement rules
+    const [replacements, setReplacements] = useState([])
+    const [newFind, setNewFind] = useState('')
+    const [newReplace, setNewReplace] = useState('')
+    const [newPage, setNewPage] = useState('all')
+
+    // Text blocks from backend (for text selection mode)
+    const [textBlocks, setTextBlocks] = useState({})
+    const [selectedTexts, setSelectedTexts] = useState({}) // { pageIndex: [{ text, bbox, id }] }
 
     // Refs for each page canvas
     const canvasRefs = useRef({})
@@ -220,10 +234,60 @@ function ProcessingPage() {
 
     const clearAllRegions = () => {
         setRegions({})
+        setSelectedTexts({})
+        setReplacements([])
+    }
+
+    // Add a text replacement rule
+    const addReplacement = () => {
+        if (!newFind.trim()) return
+        setReplacements(prev => [...prev, {
+            id: `repl-${Date.now()}`,
+            find: newFind,
+            replace: newReplace,
+            page: newPage === 'all' ? null : parseInt(newPage)
+        }])
+        setNewFind('')
+        setNewReplace('')
+        setNewPage('all')
+    }
+
+    // Remove a replacement rule
+    const removeReplacement = (id) => {
+        setReplacements(prev => prev.filter(r => r.id !== id))
+    }
+
+    // Apply text replacements
+    const applyReplacements = async () => {
+        if (replacements.length === 0) return
+        setRendering(true)
+        try {
+            const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/jobs/${jobId}/text-replace`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(replacements.map(r => ({
+                    find: r.find,
+                    replace: r.replace,
+                    page: r.page
+                })))
+            })
+            const result = await response.json()
+            if (result.status === 'ok') {
+                // Refresh job to get new thumbnails
+                const data = await jobs.get(jobId)
+                setJob(data)
+                setReplacements([])
+                alert(`Zastąpiono ${result.changes_count} wystąpień`)
+            }
+        } catch (err) {
+            setError('Błąd zamiany tekstu')
+        }
+        setRendering(false)
     }
 
     // Count total regions
     const totalRegions = Object.values(regions).reduce((sum, arr) => sum + arr.length, 0)
+    const totalSelectedTexts = Object.values(selectedTexts).reduce((sum, arr) => sum + arr.length, 0)
 
     // Handle render
     const handleRender = async () => {
@@ -357,25 +421,61 @@ function ProcessingPage() {
                 <div className="split-view">
                     {/* PDF Continuous Scroll */}
                     <div className="split-view-left" ref={containerRef}>
-                        {/* Toolbar */}
+                        {/* Toolbar with editing modes */}
                         <div className="drawing-toolbar">
+                            {/* Mode selection */}
                             <div className="toolbar-group">
-                                <button className="btn btn-icon active" title="Rysuj prostokąt do usunięcia">
+                                <button
+                                    className={`btn btn-icon ${editMode === 'rectangle' ? 'active' : ''}`}
+                                    onClick={() => setEditMode('rectangle')}
+                                    title="Zaznacz obszar prostokątem"
+                                >
                                     <Square size={18} />
                                 </button>
+                                <button
+                                    className={`btn btn-icon ${editMode === 'text' ? 'active' : ''}`}
+                                    onClick={() => setEditMode('text')}
+                                    title="Zaznacz tekst (wkrótce)"
+                                    disabled
+                                >
+                                    <Type size={18} />
+                                </button>
+                                <button
+                                    className={`btn btn-icon ${editMode === 'replace' ? 'active' : ''}`}
+                                    onClick={() => setEditMode('replace')}
+                                    title="Zamień tekst"
+                                >
+                                    <Replace size={18} />
+                                </button>
                             </div>
+                            <div className="toolbar-divider" />
+
+                            {/* Mode-specific info */}
+                            {editMode === 'rectangle' && (
+                                <>
+                                    <span className="toolbar-info">
+                                        🖱️ Narysuj prostokąt aby usunąć obszar
+                                    </span>
+                                    <span className="badge badge-danger ml-sm">
+                                        {totalRegions} usunięć
+                                    </span>
+                                </>
+                            )}
+                            {editMode === 'replace' && (
+                                <span className="toolbar-info">
+                                    ✏️ Użyj panelu po prawej aby zamienić tekst
+                                </span>
+                            )}
+
                             <div className="toolbar-divider" />
                             <button
                                 className="btn btn-icon"
                                 onClick={clearAllRegions}
                                 title="Wyczyść wszystkie"
-                                disabled={totalRegions === 0}
+                                disabled={totalRegions === 0 && replacements.length === 0}
                             >
                                 <RotateCcw size={18} />
                             </button>
-                            <span className="toolbar-info">
-                                {totalRegions} obszarów do usunięcia
-                            </span>
                             <div className="toolbar-divider" />
                             <button className="btn btn-icon" onClick={() => setZoom(z => Math.max(50, z - 25))}>
                                 <ZoomOut size={18} />
@@ -432,64 +532,161 @@ function ProcessingPage() {
                     <div className="split-view-right">
                         <div className="card mb-md">
                             <h4 style={{ marginBottom: '8px' }}>📌 Instrukcja</h4>
-                            <ol style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--color-text-muted)' }}>
-                                <li><strong>Przewiń</strong> aby zobaczyć wszystkie strony</li>
-                                <li><strong>Narysuj prostokąt</strong> na obszarze do usunięcia</li>
-                                <li>Kliknij <strong>×</strong> aby cofnąć zaznaczenie</li>
-                                <li>Kliknij <strong>Generuj PDF</strong></li>
-                            </ol>
-                        </div>
-
-                        <div className="card">
-                            <h4 className="mb-sm">🗑️ Obszary do usunięcia ({totalRegions})</h4>
-
-                            {Object.entries(regions).map(([pageIdx, pageRegions]) => (
-                                pageRegions.length > 0 && (
-                                    <div key={pageIdx} className="region-group">
-                                        <div className="region-group-header">
-                                            Strona {parseInt(pageIdx) + 1}
-                                            <span className="badge">{pageRegions.length}</span>
-                                        </div>
-                                        {pageRegions.map((region, idx) => (
-                                            <div
-                                                key={region.id}
-                                                className="region-item"
-                                            >
-                                                <span className="region-icon">
-                                                    <Trash2 size={14} />
-                                                </span>
-                                                <span className="region-label">
-                                                    Obszar {idx + 1}
-                                                </span>
-                                                <span className="region-size">
-                                                    {Math.round(region.width)}×{Math.round(region.height)}
-                                                </span>
-                                                <button
-                                                    className="btn btn-icon btn-sm"
-                                                    onClick={() => {
-                                                        setRegions(prev => ({
-                                                            ...prev,
-                                                            [pageIdx]: prev[pageIdx].filter((_, i) => i !== idx)
-                                                        }))
-                                                    }}
-                                                >
-                                                    <Trash2 size={14} />
-                                                </button>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )
-                            ))}
-
-                            {totalRegions === 0 && (
-                                <div className="empty-state" style={{ padding: '30px 20px' }}>
-                                    <Square size={28} style={{ opacity: 0.5 }} />
-                                    <p style={{ marginTop: '8px', fontSize: '13px' }}>
-                                        Narysuj prostokąty na PDF aby oznaczyć obszary do usunięcia
-                                    </p>
-                                </div>
+                            {editMode === 'rectangle' && (
+                                <ol style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--color-text-muted)' }}>
+                                    <li><strong>Przewiń</strong> aby zobaczyć wszystkie strony</li>
+                                    <li><strong>Narysuj prostokąt</strong> na obszarze do usunięcia</li>
+                                    <li>Kliknij <strong>×</strong> aby cofnąć zaznaczenie</li>
+                                    <li>Kliknij <strong>Generuj PDF</strong></li>
+                                </ol>
+                            )}
+                            {editMode === 'replace' && (
+                                <ol style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--color-text-muted)' }}>
+                                    <li>Wpisz tekst do <strong>znalezienia</strong></li>
+                                    <li>Wpisz tekst <strong>zastępczy</strong></li>
+                                    <li>Wybierz stronę lub wszystkie</li>
+                                    <li>Kliknij <strong>+ Dodaj regułę</strong></li>
+                                    <li>Kliknij <strong>Zastosuj zamiany</strong></li>
+                                </ol>
                             )}
                         </div>
+
+                        {/* Text Replacement Panel */}
+                        {editMode === 'replace' && (
+                            <div className="card mb-md">
+                                <h4 className="mb-sm">🔄 Zamiana tekstu</h4>
+
+                                <div className="form-group" style={{ marginBottom: '12px' }}>
+                                    <label style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>Znajdź:</label>
+                                    <input
+                                        type="text"
+                                        className="input"
+                                        placeholder="np. 80.000"
+                                        value={newFind}
+                                        onChange={(e) => setNewFind(e.target.value)}
+                                    />
+                                </div>
+
+                                <div className="form-group" style={{ marginBottom: '12px' }}>
+                                    <label style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>Zamień na:</label>
+                                    <input
+                                        type="text"
+                                        className="input"
+                                        placeholder="np. 100.000"
+                                        value={newReplace}
+                                        onChange={(e) => setNewReplace(e.target.value)}
+                                    />
+                                </div>
+
+                                <div className="form-group" style={{ marginBottom: '12px' }}>
+                                    <label style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>Strona:</label>
+                                    <select
+                                        className="input"
+                                        value={newPage}
+                                        onChange={(e) => setNewPage(e.target.value)}
+                                    >
+                                        <option value="all">Wszystkie strony</option>
+                                        {Array.from({ length: job?.page_count || 0 }).map((_, i) => (
+                                            <option key={i} value={i}>Strona {i + 1}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                <button
+                                    className="btn btn-secondary w-full"
+                                    onClick={addReplacement}
+                                    disabled={!newFind.trim()}
+                                >
+                                    <Plus size={16} /> Dodaj regułę
+                                </button>
+
+                                {replacements.length > 0 && (
+                                    <>
+                                        <div style={{ marginTop: '16px', borderTop: '1px solid var(--color-border)', paddingTop: '12px' }}>
+                                            <h5 style={{ fontSize: '13px', marginBottom: '8px' }}>Reguły ({replacements.length}):</h5>
+                                            {replacements.map(r => (
+                                                <div key={r.id} className="region-item" style={{ background: 'var(--color-bg-tertiary)' }}>
+                                                    <span style={{ flex: 1, fontSize: '12px' }}>
+                                                        <span style={{ color: '#ef4444' }}>{r.find}</span>
+                                                        {' → '}
+                                                        <span style={{ color: '#22c55e' }}>{r.replace || '[usuń]'}</span>
+                                                        {r.page !== null && <span style={{ color: 'var(--color-text-muted)' }}> (str. {r.page + 1})</span>}
+                                                    </span>
+                                                    <button
+                                                        className="btn btn-icon btn-sm"
+                                                        onClick={() => removeReplacement(r.id)}
+                                                    >
+                                                        <X size={14} />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <button
+                                            className="btn btn-primary w-full mt-md"
+                                            onClick={applyReplacements}
+                                            disabled={rendering}
+                                        >
+                                            {rendering ? 'Przetwarzanie...' : `Zastosuj zamiany (${replacements.length})`}
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Regions list (only in rectangle mode) */}
+                        {editMode === 'rectangle' && (
+                            <div className="card">
+                                <h4 className="mb-sm">🗑️ Obszary do usunięcia ({totalRegions})</h4>
+
+                                {Object.entries(regions).map(([pageIdx, pageRegions]) => (
+                                    pageRegions.length > 0 && (
+                                        <div key={pageIdx} className="region-group">
+                                            <div className="region-group-header">
+                                                Strona {parseInt(pageIdx) + 1}
+                                                <span className="badge">{pageRegions.length}</span>
+                                            </div>
+                                            {pageRegions.map((region, idx) => (
+                                                <div
+                                                    key={region.id}
+                                                    className="region-item"
+                                                >
+                                                    <span className="region-icon">
+                                                        <Trash2 size={14} />
+                                                    </span>
+                                                    <span className="region-label">
+                                                        Obszar {idx + 1}
+                                                    </span>
+                                                    <span className="region-size">
+                                                        {Math.round(region.width)}×{Math.round(region.height)}
+                                                    </span>
+                                                    <button
+                                                        className="btn btn-icon btn-sm"
+                                                        onClick={() => {
+                                                            setRegions(prev => ({
+                                                                ...prev,
+                                                                [pageIdx]: prev[pageIdx].filter((_, i) => i !== idx)
+                                                            }))
+                                                        }}
+                                                    >
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )
+                                ))}
+
+                                {totalRegions === 0 && (
+                                    <div className="empty-state" style={{ padding: '30px 20px' }}>
+                                        <Square size={28} style={{ opacity: 0.5 }} />
+                                        <p style={{ marginTop: '8px', fontSize: '13px' }}>
+                                            Narysuj prostokąty na PDF aby oznaczyć obszary do usunięcia
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 </div>
             )}

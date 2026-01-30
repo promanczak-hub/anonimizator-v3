@@ -229,6 +229,45 @@ input::placeholder {
   color: var(--color-accent);
 }
 
+.badge-danger {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--color-error);
+}
+
+/* Form utilities */
+.input {
+  width: 100%;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: 0.875rem;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.w-full {
+  width: 100%;
+}
+
+.mt-md {
+  margin-top: var(--spacing-md);
+}
+
+.ml-sm {
+  margin-left: var(--spacing-sm);
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 4px;
+}
+
 /* Layout */
 .app-container {
   display: flex;

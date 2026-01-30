@@ -179,6 +179,80 @@ async def get_thumbnail(
     return FileResponse(thumbnail_path, media_type="image/png")
 
 
+@router.get("/{job_id}/text-blocks")
+async def get_text_blocks(
+    job_id: UUID,
+    page: int = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Get text blocks with bounding boxes for text selection.
+
+    Returns list of text blocks with their positions for rendering
+    text selection overlay in frontend.
+    """
+    job = await session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    input_path = Path(settings.storage_path) / job.input_path
+    if not input_path.exists():
+        raise HTTPException(status_code=404, detail="PDF file not found")
+
+    import fitz
+
+    doc = fitz.open(str(input_path))
+
+    result = {"pages": []}
+
+    pages_to_process = range(len(doc)) if page is None else [page]
+
+    for page_num in pages_to_process:
+        if page_num >= len(doc):
+            continue
+
+        pdf_page = doc[page_num]
+        page_rect = pdf_page.rect
+        blocks = pdf_page.get_text("dict")["blocks"]
+
+        page_data = {
+            "page": page_num,
+            "width": page_rect.width,
+            "height": page_rect.height,
+            "blocks": [],
+        }
+
+        for block in blocks:
+            if block.get("type") != 0:  # Skip non-text blocks
+                continue
+
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    text = span.get("text", "").strip()
+                    if not text:
+                        continue
+
+                    bbox = span.get("bbox", [])
+                    if len(bbox) >= 4:
+                        page_data["blocks"].append(
+                            {
+                                "text": text,
+                                "bbox": {
+                                    "x": bbox[0] / page_rect.width * 100,
+                                    "y": bbox[1] / page_rect.height * 100,
+                                    "w": (bbox[2] - bbox[0]) / page_rect.width * 100,
+                                    "h": (bbox[3] - bbox[1]) / page_rect.height * 100,
+                                },
+                                "font_size": span.get("size", 12),
+                            }
+                        )
+
+        result["pages"].append(page_data)
+
+    doc.close()
+    return result
+
+
 @router.post("/{job_id}/decisions")
 async def submit_decisions(
     job_id: UUID,
@@ -200,6 +274,99 @@ async def submit_decisions(
     await session.commit()
 
     return {"status": "ok", "decisions_count": len(decisions.decisions)}
+
+
+@router.post("/{job_id}/text-replace")
+async def text_replace(
+    job_id: UUID,
+    replacements: list = [],
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Apply text replacements to PDF.
+
+    Each replacement is: {"find": "80.000", "replace": "100.000", "page": 0 or null for all}
+    """
+    from pydantic import BaseModel
+
+    class TextReplacement(BaseModel):
+        find: str
+        replace: str
+        page: int = None  # None = all pages
+
+    job = await session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    input_path = Path(settings.storage_path) / job.input_path
+    if not input_path.exists():
+        raise HTTPException(status_code=404, detail="PDF file not found")
+
+    import fitz
+
+    doc = fitz.open(str(input_path))
+
+    changes_made = []
+
+    for repl_data in replacements:
+        repl = TextReplacement(**repl_data)
+        pages_to_check = [repl.page] if repl.page is not None else range(len(doc))
+
+        for page_num in pages_to_check:
+            if page_num >= len(doc):
+                continue
+
+            page = doc[page_num]
+            text_instances = page.search_for(repl.find)
+
+            for inst in text_instances:
+                # Add redaction annotation to remove old text
+                page.add_redact_annot(inst, fill=(1, 1, 1))  # White fill
+                changes_made.append(
+                    {
+                        "page": page_num,
+                        "find": repl.find,
+                        "replace": repl.replace,
+                        "bbox": [inst.x0, inst.y0, inst.x1, inst.y1],
+                    }
+                )
+
+            # Apply redactions
+            if text_instances:
+                page.apply_redactions()
+
+                # Insert new text at each location
+                for inst in text_instances:
+                    # Get approximate font size based on box height
+                    font_size = max(8, int((inst.y1 - inst.y0) * 0.8))
+                    page.insert_text(
+                        (inst.x0, inst.y1 - 2),  # Slightly adjust position
+                        repl.replace,
+                        fontsize=font_size,
+                        color=(0, 0, 0),  # Black text
+                    )
+
+    # Save modified PDF
+    output_dir = Path(settings.storage_path) / "outputs" / str(job.id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"replaced_{job.original_filename}"
+    doc.save(str(output_path))
+    doc.close()
+
+    # Update job
+    job.output_pdf_path = str(output_path.relative_to(settings.storage_path))
+    job.status = "done"
+    job.completed_at = datetime.utcnow()
+    await session.commit()
+
+    # Regenerate thumbnails
+    from app.services.pdf_processor import PDFProcessor
+
+    thumbnails_dir = Path(settings.storage_path) / "thumbnails" / str(job.id)
+    with PDFProcessor(output_path) as processor:
+        processor.generate_thumbnails(thumbnails_dir)
+
+    return {"status": "ok", "changes_count": len(changes_made), "changes": changes_made}
 
 
 @router.post("/{job_id}/render")
