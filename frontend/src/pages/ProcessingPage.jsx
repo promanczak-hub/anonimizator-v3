@@ -7,6 +7,7 @@ import {
     Type, Replace, Plus, X, Scissors, Hand
 } from 'lucide-react'
 import { jobs } from '../api/client'
+import FabricPDFEditor from '../components/FabricPDFEditor'
 
 function ProcessingPage() {
     const { jobId } = useParams()
@@ -20,15 +21,7 @@ function ProcessingPage() {
     // Editing mode: 'rectangle', 'text', 'replace', 'pan'
     const [editMode, setEditMode] = useState('pan')
 
-    // Pan mode state
-    const [isPanning, setIsPanning] = useState(false)
-    const [panStart, setPanStart] = useState({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 })
-
-    // Drawing state - now per page
-    const [isDrawing, setIsDrawing] = useState(false)
-    const [drawingPage, setDrawingPage] = useState(null)
-    const [drawStart, setDrawStart] = useState(null)
-    const [currentRect, setCurrentRect] = useState(null)
+    // Regions for redaction per page - managed by FabricPDFEditor
     const [regions, setRegions] = useState({}) // { pageIndex: [{ x, y, width, height, id }] }
 
     // Text replacement rules
@@ -43,8 +36,7 @@ function ProcessingPage() {
     const [blocksToDelete, setBlocksToDelete] = useState([])
 
     // Refs for each page canvas
-    const canvasRefs = useRef({})
-    const imageRefs = useRef({})
+    const fabricRefs = useRef({})
     const containerRef = useRef(null)
     const refreshTimeoutRef = useRef(null)
 
@@ -81,26 +73,7 @@ function ProcessingPage() {
         }
     }, [jobId])
 
-    // Load text blocks when text editing mode is active
-    useEffect(() => {
-        const handleGlobalMouseUp = () => {
-            if (isPanning) {
-                setIsPanning(false)
-            }
-            if (isDrawing) {
-                setIsDrawing(false)
-                setDrawStart(null)
-                setCurrentRect(null)
-                setDrawingPage(null)
-            }
-        }
-        window.addEventListener('mouseup', handleGlobalMouseUp)
-        window.addEventListener('mouseleave', handleGlobalMouseUp)
-        return () => {
-            window.removeEventListener('mouseup', handleGlobalMouseUp)
-            window.removeEventListener('mouseleave', handleGlobalMouseUp)
-        }
-    }, [isPanning, isDrawing])
+    // Global mouseup handler removed - handled by FabricPDFEditor
 
     // Wheel zoom handler for PDF container
     useEffect(() => {
@@ -149,261 +122,9 @@ function ProcessingPage() {
         }
     }, [editMode, job, textBlocks])
 
-    // Redraw all canvases when regions change
-    useEffect(() => {
-        if (job) {
-            for (let i = 0; i < job.page_count; i++) {
-                redrawCanvas(i)
-            }
-        }
-    }, [regions, currentRect, drawingPage, job])
+    // Canvas redraw handled by FabricPDFEditor
 
-    const redrawCanvas = useCallback((pageIndex) => {
-        const canvas = canvasRefs.current[pageIndex]
-        if (!canvas) return
-
-        const ctx = canvas.getContext('2d')
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-        // Draw existing regions for this page
-        const pageRegions = regions[pageIndex] || []
-        pageRegions.forEach(rect => {
-            // Semi-transparent dark overlay (clean look)
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
-            ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
-
-            // Thin red dashed border
-            ctx.strokeStyle = '#ef4444'
-            ctx.lineWidth = 2
-            ctx.setLineDash([4, 4])
-            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height)
-            ctx.setLineDash([])
-
-            // Small × button in top-right corner (minimal)
-            const btnSize = 20
-            ctx.fillStyle = '#ef4444'
-            ctx.beginPath()
-            ctx.arc(rect.x + rect.width - btnSize / 2, rect.y + btnSize / 2, btnSize / 2, 0, 2 * Math.PI)
-            ctx.fill()
-            ctx.fillStyle = 'white'
-            ctx.font = 'bold 14px sans-serif'
-            ctx.textAlign = 'center'
-            ctx.textBaseline = 'middle'
-            ctx.fillText('×', rect.x + rect.width - btnSize / 2, rect.y + btnSize / 2 + 1)
-        })
-
-        // Draw current rectangle being drawn (on the active page)
-        if (drawingPage === pageIndex && currentRect) {
-            ctx.fillStyle = 'rgba(139, 92, 246, 0.3)'
-            ctx.fillRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height)
-            ctx.strokeStyle = '#8b5cf6'
-            ctx.lineWidth = 2
-            ctx.setLineDash([5, 5])
-            ctx.strokeRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height)
-            ctx.setLineDash([])
-        }
-    }, [regions, currentRect, drawingPage])
-
-    const handleImageLoad = useCallback((pageIndex) => {
-        const img = imageRefs.current[pageIndex]
-        const canvas = canvasRefs.current[pageIndex]
-        if (img && canvas) {
-            canvas.width = img.clientWidth
-            canvas.height = img.clientHeight
-            redrawCanvas(pageIndex)
-        }
-    }, [redrawCanvas])
-
-    const getMousePos = useCallback((e, pageIndex) => {
-        const canvas = canvasRefs.current[pageIndex]
-        if (!canvas) return { x: 0, y: 0 }
-
-        const rect = canvas.getBoundingClientRect()
-        const scaleX = canvas.width / rect.width
-        const scaleY = canvas.height / rect.height
-
-        return {
-            x: (e.clientX - rect.left) * scaleX,
-            y: (e.clientY - rect.top) * scaleY
-        }
-    }, [])
-
-    const handleMouseDown = useCallback((e, pageIndex) => {
-        // Pan mode - start panning
-        if (editMode === 'pan') {
-            setIsPanning(true)
-            const container = containerRef.current
-            if (container) {
-                setPanStart({
-                    x: e.clientX,
-                    y: e.clientY,
-                    scrollLeft: container.scrollLeft,
-                    scrollTop: container.scrollTop
-                })
-            }
-            e.preventDefault()
-            return
-        }
-
-        // Text mode - find clicked text block for editing
-        if (editMode === 'text') {
-            const canvas = canvasRefs.current[pageIndex]
-            if (!canvas) return
-
-            const rect = canvas.getBoundingClientRect()
-            const clickX = ((e.clientX - rect.left) / rect.width) * 100
-            const clickY = ((e.clientY - rect.top) / rect.height) * 100
-
-            const pageBlocks = textBlocks[pageIndex] || []
-            for (let i = 0; i < pageBlocks.length; i++) {
-                const block = pageBlocks[i]
-                const bbox = block.bbox
-                if (clickX >= bbox.x && clickX <= bbox.x + bbox.w &&
-                    clickY >= bbox.y && clickY <= bbox.y + bbox.h) {
-                    // Found clicked text block - start editing
-                    const editKey = `${pageIndex}_${i}`
-                    const currentText = textEdits[editKey] !== undefined ? textEdits[editKey] : block.text
-                    setEditingBlock({ pageIndex, blockIndex: i, text: currentText })
-                    e.preventDefault()
-                    return
-                }
-            }
-            // Clicked outside text blocks - close editor
-            setEditingBlock(null)
-            return
-        }
-
-        const pos = getMousePos(e, pageIndex)
-
-        // Check if clicked on delete button (× in corner) or USUŃ label
-        const pageRegions = regions[pageIndex] || []
-        for (let i = pageRegions.length - 1; i >= 0; i--) {
-            const rect = pageRegions[i]
-
-            // Check × button (circle in top-right corner)
-            const dx = pos.x - (rect.x + rect.width - 12)
-            const dy = pos.y - (rect.y + 12)
-            if (dx * dx + dy * dy < 144) { // 12px radius
-                // Delete this region
-                setRegions(prev => ({
-                    ...prev,
-                    [pageIndex]: prev[pageIndex].filter((_, idx) => idx !== i)
-                }))
-                return
-            }
-
-            // Check USUŃ label (bottom-left rectangle 70x20)
-            if (pos.x >= rect.x && pos.x <= rect.x + 70 &&
-                pos.y >= rect.y + rect.height - 20 && pos.y <= rect.y + rect.height) {
-                // Delete this region
-                setRegions(prev => ({
-                    ...prev,
-                    [pageIndex]: prev[pageIndex].filter((_, idx) => idx !== i)
-                }))
-                return
-            }
-        }
-
-        // Start drawing
-        setIsDrawing(true)
-        setDrawingPage(pageIndex)
-        setDrawStart(pos)
-    }, [regions, getMousePos, editMode, textBlocks, textEdits])
-
-    const handleMouseMove = useCallback((e, pageIndex) => {
-        // Pan mode - scroll container
-        if (isPanning && editMode === 'pan') {
-            const container = containerRef.current
-            if (container) {
-                container.scrollLeft = panStart.scrollLeft - (e.clientX - panStart.x)
-                container.scrollTop = panStart.scrollTop - (e.clientY - panStart.y)
-            }
-            return
-        }
-
-        if (!isDrawing || drawingPage !== pageIndex || !drawStart) return
-
-        const pos = getMousePos(e, pageIndex)
-
-        let x = drawStart.x
-        let y = drawStart.y
-        let width = pos.x - drawStart.x
-        let height = pos.y - drawStart.y
-
-        // Handle negative dimensions
-        if (width < 0) {
-            x = pos.x
-            width = Math.abs(width)
-        }
-        if (height < 0) {
-            y = pos.y
-            height = Math.abs(height)
-        }
-
-        setCurrentRect({ x, y, width, height })
-    }, [isDrawing, drawingPage, drawStart, getMousePos, isPanning, editMode, panStart])
-
-    const handleMouseUp = useCallback((pageIndex) => {
-        // Stop panning
-        if (isPanning) {
-            setIsPanning(false)
-            return
-        }
-
-        if (!isDrawing || drawingPage !== pageIndex || !currentRect) {
-            setIsDrawing(false)
-            setDrawStart(null)
-            setCurrentRect(null)
-            setDrawingPage(null)
-            return
-        }
-
-        // Only save if big enough (at least 10x10 pixels)
-        if (currentRect.width > 10 && currentRect.height > 10) {
-            const newRegion = {
-                ...currentRect,
-                id: `rect-${Date.now()}`
-            }
-            setRegions(prev => ({
-                ...prev,
-                [pageIndex]: [...(prev[pageIndex] || []), newRegion]
-            }))
-
-            // Auto-zoom to selection for better visibility
-            const canvas = canvasRefs.current[pageIndex]
-            if (canvas) {
-                // Zoom to 150% if currently at fit or lower
-                const currentZoom = zoom === 'fit' ? 100 : zoom
-                if (currentZoom < 150) {
-                    setZoom(150)
-                }
-
-                // Scroll to the selected region after a small delay to allow zoom to apply
-                setTimeout(() => {
-                    const container = containerRef.current
-                    if (container && canvas) {
-                        const canvasRect = canvas.getBoundingClientRect()
-                        const containerRect = container.getBoundingClientRect()
-
-                        // Calculate where the selection center is
-                        const selectionCenterY = canvasRect.top - containerRect.top +
-                            (currentRect.y + currentRect.height / 2) * (canvasRect.height / canvas.height)
-
-                        // Scroll to center the selection
-                        container.scrollTo({
-                            top: container.scrollTop + selectionCenterY - containerRect.height / 2,
-                            behavior: 'smooth'
-                        })
-                    }
-                }, 100)
-            }
-        }
-
-        setIsDrawing(false)
-        setDrawStart(null)
-        setCurrentRect(null)
-        setDrawingPage(null)
-    }, [isDrawing, drawingPage, currentRect, zoom])
+    // All canvas mouse handlers removed - now handled by FabricPDFEditor
 
     const clearAllRegions = () => {
         setRegions({})
@@ -510,19 +231,30 @@ function ProcessingPage() {
 
     // Apply block deletions
     const applyBlockDeletions = async () => {
-        if (blocksToDelete.length === 0) return
+        console.log('🔴 applyBlockDeletions called, blocksToDelete:', blocksToDelete)
+        if (blocksToDelete.length === 0) {
+            console.log('❌ No blocks to delete')
+            return
+        }
 
         setRendering(true)
         try {
+            const payload = blocksToDelete.map(b => ({
+                page: b.page,
+                bbox: b.bbox
+            }))
+            console.log('📤 Sending to API:', payload)
+
             const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/jobs/${jobId}/delete-blocks`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(blocksToDelete.map(b => ({
-                    page: b.page,
-                    bbox: b.bbox
-                })))
+                body: JSON.stringify(payload)
             })
+            console.log('📥 Response status:', response.status)
+
             const result = await response.json()
+            console.log('📥 Response body:', result)
+
             if (result.status === 'ok') {
                 // Refresh job and clear selection
                 const data = await jobs.get(jobId)
@@ -531,10 +263,12 @@ function ProcessingPage() {
                 setTextBlocks({}) // Clear text blocks to force re-fetch
                 alert(`Usunięto ${result.deleted_count} elementów`)
             } else {
+                console.error('❌ API error:', result)
                 setError(result.detail || 'Błąd usuwania')
             }
         } catch (err) {
-            setError('Błąd usuwania elementów')
+            console.error('❌ Fetch error:', err)
+            setError('Błąd usuwania elementów: ' + err.message)
         }
         setRendering(false)
     }
@@ -791,213 +525,37 @@ function ProcessingPage() {
                                         </button>
                                     </div>
                                     <div className="canvas-wrapper" style={{ position: 'relative', display: 'inline-block' }}>
-                                        <img
-                                            ref={el => imageRefs.current[pageIndex] = el}
-                                            src={jobs.getThumbnailUrl(jobId, pageIndex)}
-                                            alt={`Strona ${pageIndex + 1}`}
-                                            onLoad={() => handleImageLoad(pageIndex)}
-                                            style={{
-                                                width: zoom === 'fit' ? '100%' : `${zoom}%`,
-                                                display: 'block',
-                                                borderRadius: '4px',
-                                                boxShadow: pagesToDelete.includes(pageIndex) ? '0 0 0 3px #ef4444' : '0 4px 12px rgba(0,0,0,0.3)',
-                                                userSelect: 'none',
-                                                opacity: pagesToDelete.includes(pageIndex) ? 0.5 : 1
+                                        <FabricPDFEditor
+                                            ref={el => fabricRefs.current[pageIndex] = el}
+                                            pageIndex={pageIndex}
+                                            imageUrl={jobs.getThumbnailUrl(jobId, pageIndex)}
+                                            zoom={zoom === 'fit' ? 100 : zoom}
+                                            editMode={editMode}
+                                            regions={regions[pageIndex] || []}
+                                            onRegionsChange={(newRegions) => {
+                                                setRegions(prev => ({
+                                                    ...prev,
+                                                    [pageIndex]: newRegions
+                                                }))
                                             }}
-                                            draggable={false}
-                                        />
-                                        <canvas
-                                            ref={el => canvasRefs.current[pageIndex] = el}
-                                            onMouseDown={(e) => handleMouseDown(e, pageIndex)}
-                                            onMouseMove={(e) => handleMouseMove(e, pageIndex)}
-                                            onMouseUp={() => handleMouseUp(pageIndex)}
-                                            onMouseLeave={() => handleMouseUp(pageIndex)}
-                                            style={{
-                                                position: 'absolute',
-                                                top: 0,
-                                                left: 0,
-                                                width: '100%',
-                                                height: '100%',
-                                                cursor: editMode === 'text' ? 'text' : editMode === 'pan' ? 'grab' : 'crosshair',
-                                                borderRadius: '4px'
+                                            textBlocks={textBlocks[pageIndex] || []}
+                                            textEdits={Object.fromEntries(
+                                                Object.entries(textEdits)
+                                                    .filter(([key]) => key.startsWith(`${pageIndex}_`))
+                                                    .map(([key, val]) => [key.split('_')[1], val])
+                                            )}
+                                            onTextEdit={(pageIdx, blockIdx, newText) => {
+                                                const editKey = `${pageIdx}_${blockIdx}`
+                                                setTextEdits(prev => ({
+                                                    ...prev,
+                                                    [editKey]: newText
+                                                }))
                                             }}
+                                            blocksToDelete={blocksToDelete}
+                                            onBlockToggle={toggleBlockDelete}
+                                            onImageLoad={(idx, dims) => console.log(`Page ${idx} loaded: ${dims.width}x${dims.height}`)}
                                         />
-                                        {/* Text overlay for Word-like editing */}
-                                        {editMode === 'text' && textBlocks[pageIndex] && (
-                                            <div className="text-overlay" style={{
-                                                position: 'absolute',
-                                                top: 0,
-                                                left: 0,
-                                                width: '100%',
-                                                height: '100%',
-                                                pointerEvents: 'none'
-                                            }}>
-                                                {textBlocks[pageIndex].map((block, blockIndex) => {
-                                                    const isEditing = editingBlock?.pageIndex === pageIndex && editingBlock?.blockIndex === blockIndex
-                                                    const editKey = `${pageIndex}_${blockIndex}`
-                                                    const hasEdit = textEdits[editKey] !== undefined
-                                                    const displayText = hasEdit ? textEdits[editKey] : block.text
-                                                    const isModified = hasEdit && textEdits[editKey] !== block.text
-                                                    const isDeleted = (isModified && displayText === '')  // Empty text = deleted
-
-                                                    // Check if marked for deletion via block deleter
-                                                    const blockId = `${pageIndex}_${blockIndex}`
-                                                    const isMarkedForDeletion = blocksToDelete.some(b => b.id === blockId)
-                                                    const isImage = block.type === 'image'
-
-                                                    return (
-                                                        <div
-                                                            key={blockIndex}
-                                                            className={`text-block ${isEditing ? 'editing' : ''} ${isModified ? 'modified' : ''} ${isDeleted ? 'deleted' : ''} ${isMarkedForDeletion ? 'marked-delete' : ''} ${isImage ? 'image-block' : ''}`}
-                                                            style={{
-                                                                position: 'absolute',
-                                                                // Add slight padding to ensure mask covers original text
-                                                                left: `${block.bbox.x - 0.3}%`,
-                                                                top: `${block.bbox.y - 0.3}%`,
-                                                                width: `${block.bbox.w + 0.6}%`,
-                                                                height: `${block.bbox.h + 0.6}%`,
-                                                                minHeight: isImage ? '0' : '18px',
-                                                                pointerEvents: 'auto',
-                                                                cursor: isImage ? 'pointer' : 'text',
-                                                                // White background to MASK original text when modified or editing
-                                                                // OR Read semi-transparent overlay if marked for deletion
-                                                                backgroundColor: isMarkedForDeletion ? 'rgba(239, 68, 68, 0.2)' : (isEditing || isModified ? 'white' : 'transparent'),
-                                                                // Border styling
-                                                                border: isMarkedForDeletion ? '2px solid #ef4444' : (isImage ? '2px dashed #8b5cf6' : (isDeleted ? 'none' : isEditing ? '2px solid #3b82f6' : isModified ? '1px solid #22c55e' : 'none')),
-                                                                borderRadius: '2px',
-                                                                outline: 'none',
-                                                                display: 'flex',
-                                                                alignItems: 'center',
-                                                                justifyContent: isImage ? 'center' : 'flex-start',
-                                                                // NO shadow for deleted blocks
-                                                                boxShadow: isDeleted ? 'none' : isModified && !isEditing ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                                                                // Ensure proper z-index for masking
-                                                                zIndex: isEditing || isMarkedForDeletion ? 100 : isModified ? 50 : 1
-                                                            }}
-                                                            onClick={(e) => {
-                                                                e.stopPropagation()
-
-                                                                // Priority: Block Deletion toggle (if image or holding cmd/ctrl key?)
-                                                                // For now: Left click on Image = Toggle Delete
-                                                                // Left click on Text = Edit (start editing)
-
-                                                                if (isImage) {
-                                                                    toggleBlockDelete(pageIndex, blockIndex, block.bbox)
-                                                                    return
-                                                                }
-
-                                                                const currentText = textEdits[editKey] !== undefined ? textEdits[editKey] : block.text
-                                                                setEditingBlock({ pageIndex, blockIndex, text: currentText })
-                                                            }}
-                                                        >
-                                                            {isImage && (
-                                                                <div className="image-label" style={{
-                                                                    display: 'none',
-                                                                    color: '#8b5cf6',
-                                                                    background: 'rgba(255,255,255,0.9)',
-                                                                    padding: '2px 4px',
-                                                                    borderRadius: '4px',
-                                                                    fontSize: '10px',
-                                                                    fontWeight: 'bold'
-                                                                }}>
-                                                                    OBRAZ
-                                                                </div>
-                                                            )}
-
-                                                            {/* Trash Icon Overlay for hovering */}
-                                                            {isImage && !isMarkedForDeletion && (
-                                                                <div className="hover-actions" style={{ position: 'absolute', top: -10, right: -10 }}>
-
-                                                                </div>
-                                                            )}
-
-                                                            {isMarkedForDeletion && (
-                                                                <div style={{
-                                                                    position: 'absolute',
-                                                                    top: '50%',
-                                                                    left: '50%',
-                                                                    transform: 'translate(-50%, -50%)',
-                                                                    color: '#ef4444',
-                                                                    background: 'white',
-                                                                    borderRadius: '50%',
-                                                                    width: '24px',
-                                                                    height: '24px',
-                                                                    display: 'flex',
-                                                                    alignItems: 'center',
-                                                                    justifyContent: 'center',
-                                                                    boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
-                                                                }}>
-                                                                    <Trash2 size={14} />
-                                                                </div>
-                                                            )}
-                                                            {isEditing ? (
-                                                                <input
-                                                                    type="text"
-                                                                    value={editingBlock.text}
-                                                                    autoFocus
-                                                                    onChange={(e) => setEditingBlock(prev => ({ ...prev, text: e.target.value }))}
-                                                                    onBlur={() => {
-                                                                        // Save edit on blur
-                                                                        if (editingBlock.text !== block.text) {
-                                                                            setTextEdits(prev => ({
-                                                                                ...prev,
-                                                                                [editKey]: editingBlock.text
-                                                                            }))
-                                                                            // Also add to replacements for backend processing
-                                                                            setReplacements(prev => {
-                                                                                const existing = prev.find(r => r.find === block.text && r.page === pageIndex)
-                                                                                if (existing) {
-                                                                                    return prev.map(r => r === existing ? { ...r, replace: editingBlock.text } : r)
-                                                                                }
-                                                                                return [...prev, {
-                                                                                    find: block.text,
-                                                                                    replace: editingBlock.text,
-                                                                                    page: pageIndex
-                                                                                }]
-                                                                            })
-                                                                        }
-                                                                        setEditingBlock(null)
-                                                                    }}
-                                                                    onKeyDown={(e) => {
-                                                                        if (e.key === 'Enter') {
-                                                                            e.target.blur()
-                                                                        }
-                                                                        if (e.key === 'Escape') {
-                                                                            setEditingBlock(null)
-                                                                        }
-                                                                    }}
-                                                                    style={{
-                                                                        width: '100%',
-                                                                        height: '100%',
-                                                                        border: 'none',
-                                                                        background: 'white',
-                                                                        fontSize: `${Math.max(10, Math.min(16, block.font_size * 0.8))}px`,
-                                                                        fontFamily: 'inherit',
-                                                                        padding: '2px 4px',
-                                                                        outline: 'none',
-                                                                        boxSizing: 'border-box'
-                                                                    }}
-                                                                />
-                                                            ) : isModified ? (
-                                                                // Show edited text with matching font size
-                                                                <span style={{
-                                                                    fontSize: `${Math.max(10, Math.min(16, block.font_size * 0.8))}px`,
-                                                                    fontFamily: 'Arial, sans-serif',
-                                                                    color: '#166534',
-                                                                    padding: '2px 4px',
-                                                                    whiteSpace: 'nowrap',
-                                                                    overflow: 'hidden',
-                                                                    textOverflow: 'ellipsis',
-                                                                    width: '100%'
-                                                                }}>
-                                                                    {displayText}
-                                                                </span>
-                                                            ) : null}
-                                                        </div>
-                                                    )
-                                                })}
-                                            </div>
-                                        )}
+                                        {/* Text overlay removed - now handled by FabricPDFEditor */}
                                     </div>
                                 </div>
                             ))}

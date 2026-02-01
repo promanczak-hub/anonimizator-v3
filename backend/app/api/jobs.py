@@ -5,6 +5,7 @@ from fastapi import (
     UploadFile,
     File,
     Form,
+    Body,
     Depends,
     HTTPException,
     BackgroundTasks,
@@ -500,7 +501,9 @@ async def text_replace(
 @router.post("/{job_id}/delete-blocks")
 async def delete_blocks(
     job_id: UUID,
-    blocks: list = [],  # List of { page: int, bbox: [x, y, w, h] (normalized %) }
+    blocks: list = Body(
+        default=[], description="List of blocks with page and bbox (normalized %)"
+    ),
     session: AsyncSession = Depends(get_session),
 ):
     """
@@ -572,7 +575,9 @@ async def delete_blocks(
 @router.post("/{job_id}/delete-pages")
 async def delete_pages(
     job_id: UUID,
-    request_body: dict = {},
+    request_body: dict = Body(
+        default={}, description="Dict with 'pages' list of 0-indexed page numbers"
+    ),
     session: AsyncSession = Depends(get_session),
 ):
     """
@@ -747,4 +752,50 @@ async def list_jobs(
         "total": len(jobs),
         "limit": limit,
         "offset": offset,
+    }
+
+
+@router.delete("/{job_id}")
+async def delete_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Delete a job and all associated files (input, output, thumbnails).
+    """
+    import shutil
+
+    job = await session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Delete associated files
+    files_deleted = []
+
+    # Delete input files directory
+    input_dir = Path(settings.storage_path) / "inputs" / str(job.id)
+    if input_dir.exists():
+        shutil.rmtree(input_dir)
+        files_deleted.append("inputs")
+
+    # Delete output files directory
+    output_dir = Path(settings.storage_path) / "outputs" / str(job.id)
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+        files_deleted.append("outputs")
+
+    # Delete thumbnails directory
+    thumbnails_dir = Path(settings.storage_path) / "thumbnails" / str(job.id)
+    if thumbnails_dir.exists():
+        shutil.rmtree(thumbnails_dir)
+        files_deleted.append("thumbnails")
+
+    # Delete job from database
+    await session.delete(job)
+    await session.commit()
+
+    return {
+        "status": "ok",
+        "message": f"Job {job_id} deleted",
+        "files_deleted": files_deleted,
     }

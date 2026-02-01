@@ -1,6 +1,5 @@
-import { BrowserRouter, Routes, Route, NavLink, Link } from 'react-router-dom'
-import { FileText, FolderOpen, Plus } from 'lucide-react'
-import HomePage from './pages/HomePage'
+import { BrowserRouter, Routes, Route, NavLink, Link, Navigate } from 'react-router-dom'
+import { FolderOpen } from 'lucide-react'
 import ProcessingPage from './pages/ProcessingPage'
 import LibraryPage from './pages/LibraryPage'
 
@@ -9,16 +8,12 @@ function App() {
         <BrowserRouter>
             <div className="app-container">
                 <header className="header">
-                    <Link to="/" className="header-logo" style={{ textDecoration: 'none', cursor: 'pointer' }}>
+                    <Link to="/library" className="header-logo" style={{ textDecoration: 'none', cursor: 'pointer' }}>
                         <img src="/express_logo.png" alt="Express Car Rental" style={{ height: 36 }} />
                         <span style={{ marginLeft: 8, fontWeight: 600, color: 'var(--color-text-primary)' }}>Anonimizator</span>
                     </Link>
 
                     <nav className="header-nav">
-                        <NavLink to="/" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                            <Plus size={18} />
-                            Nowy
-                        </NavLink>
                         <NavLink to="/library" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                             <FolderOpen size={18} />
                             Biblioteka
@@ -28,7 +23,7 @@ function App() {
 
                 <main className="main-content">
                     <Routes>
-                        <Route path="/" element={<HomePage />} />
+                        <Route path="/" element={<Navigate to="/library" replace />} />
                         <Route path="/process/:jobId" element={<ProcessingPage />} />
                         <Route path="/library" element={<LibraryPage />} />
                     </Routes>

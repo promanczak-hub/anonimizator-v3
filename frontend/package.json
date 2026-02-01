@@ -10,11 +10,11 @@
     },
     "dependencies": {
         "axios": "^1.7.0",
+        "fabric": "^6.9.1",
         "lucide-react": "^0.469.0",
         "pdfjs-dist": "^3.4.120",
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
-        "react-pdf-highlighter": "^8.0.0-rc.0",
         "react-router-dom": "^7.1.0"
     },
     "devDependencies": {

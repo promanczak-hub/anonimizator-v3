@@ -52,6 +52,11 @@ export const jobs = {
     getThumbnailUrl: (jobId, page) => `${API_URL}/api/jobs/${jobId}/thumbnail/${page}`,
 
     getDownloadUrl: (jobId, fileType) => `${API_URL}/api/jobs/${jobId}/download/${fileType}`,
+
+    delete: async (jobId) => {
+        const response = await api.delete(`/jobs/${jobId}`)
+        return response.data
+    },
 }
 
 // Documents API
