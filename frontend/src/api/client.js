@@ -57,6 +57,39 @@ export const jobs = {
         const response = await api.delete(`/jobs/${jobId}`)
         return response.data
     },
+
+    // Magic Eraser - detect patterns
+    detectPatterns: async (jobId, patternType) => {
+        const response = await api.post(`/jobs/${jobId}/detect-patterns`, patternType, {
+            headers: { 'Content-Type': 'application/json' },
+        })
+        return response.data
+    },
+
+    // Get text blocks with bounding boxes
+    getTextBlocks: async (jobId, page = null) => {
+        const params = page !== null ? { page } : {}
+        const response = await api.get(`/jobs/${jobId}/text-blocks`, { params })
+        return response.data
+    },
+
+    // Delete blocks (images/text areas)
+    deleteBlocks: async (jobId, blocks) => {
+        const response = await api.post(`/jobs/${jobId}/delete-blocks`, blocks)
+        return response.data
+    },
+
+    // Delete pages
+    deletePages: async (jobId, pages) => {
+        const response = await api.post(`/jobs/${jobId}/delete-pages`, { pages })
+        return response.data
+    },
+
+    // Text replace
+    textReplace: async (jobId, replacements) => {
+        const response = await api.post(`/jobs/${jobId}/text-replace`, replacements)
+        return response.data
+    },
 }
 
 // Documents API

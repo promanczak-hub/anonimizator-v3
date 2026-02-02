@@ -7,7 +7,7 @@ import {
     Type, Replace, Plus, X, Scissors, Hand
 } from 'lucide-react'
 import { jobs } from '../api/client'
-import FabricPDFEditor from '../components/FabricPDFEditor'
+import PDFHighlighterEditor from '../components/PDFHighlighterEditor'
 
 function ProcessingPage() {
     const { jobId } = useParams()
@@ -21,7 +21,7 @@ function ProcessingPage() {
     // Editing mode: 'rectangle', 'text', 'replace', 'pan'
     const [editMode, setEditMode] = useState('pan')
 
-    // Regions for redaction per page - managed by FabricPDFEditor
+    // Regions for redaction per page
     const [regions, setRegions] = useState({}) // { pageIndex: [{ x, y, width, height, id }] }
 
     // Text replacement rules
@@ -73,7 +73,7 @@ function ProcessingPage() {
         }
     }, [jobId])
 
-    // Global mouseup handler removed - handled by FabricPDFEditor
+
 
     // Wheel zoom handler for PDF container
     useEffect(() => {
@@ -525,37 +525,11 @@ function ProcessingPage() {
                                         </button>
                                     </div>
                                     <div className="canvas-wrapper" style={{ position: 'relative', display: 'inline-block' }}>
-                                        <FabricPDFEditor
-                                            ref={el => fabricRefs.current[pageIndex] = el}
-                                            pageIndex={pageIndex}
-                                            imageUrl={jobs.getThumbnailUrl(jobId, pageIndex)}
-                                            zoom={zoom === 'fit' ? 100 : zoom}
-                                            editMode={editMode}
-                                            regions={regions[pageIndex] || []}
-                                            onRegionsChange={(newRegions) => {
-                                                setRegions(prev => ({
-                                                    ...prev,
-                                                    [pageIndex]: newRegions
-                                                }))
-                                            }}
-                                            textBlocks={textBlocks[pageIndex] || []}
-                                            textEdits={Object.fromEntries(
-                                                Object.entries(textEdits)
-                                                    .filter(([key]) => key.startsWith(`${pageIndex}_`))
-                                                    .map(([key, val]) => [key.split('_')[1], val])
-                                            )}
-                                            onTextEdit={(pageIdx, blockIdx, newText) => {
-                                                const editKey = `${pageIdx}_${blockIdx}`
-                                                setTextEdits(prev => ({
-                                                    ...prev,
-                                                    [editKey]: newText
-                                                }))
-                                            }}
-                                            blocksToDelete={blocksToDelete}
-                                            onBlockToggle={toggleBlockDelete}
-                                            onImageLoad={(idx, dims) => console.log(`Page ${idx} loaded: ${dims.width}x${dims.height}`)}
+                                        <PDFHighlighterEditor
+                                            pdfUrl={`${API_URL}/api/jobs/${jobId}/pdf`}
+                                            highlights={[]}
+                                            onHighlightsChange={() => { }}
                                         />
-                                        {/* Text overlay removed - now handled by FabricPDFEditor */}
                                     </div>
                                 </div>
                             ))}

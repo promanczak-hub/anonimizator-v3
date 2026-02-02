@@ -19,6 +19,7 @@ from pathlib import Path
 import json
 import aiofiles
 import os
+import re
 
 from app.database import get_session
 from app.config import get_settings
@@ -103,10 +104,20 @@ async def create_job(
 
     # Update job with file path
     job.input_path = str(input_path.relative_to(settings.storage_path))
+
+    # Extract page count from PDF
+    import fitz
+
+    with fitz.open(str(input_path)) as pdf:
+        job.page_count = len(pdf)
+
+    # Skip Celery for local dev (no Redis) - set status to review immediately
+    job.status = "review"
+    job.progress = 100
     await session.commit()
 
-    # Trigger async processing
-    process_document.delay(str(job.id))
+    # NOTE: For production with Redis, uncomment:
+    # process_document.delay(str(job.id))
 
     return job
 
@@ -343,6 +354,117 @@ async def get_text_blocks(
     return result
 
 
+# Pattern detection constants for Magic Eraser
+DETECTION_PATTERNS = {
+    "pesel": r"\b\d{11}\b",
+    "money": r"\d{1,3}(?:[\s.]\d{3})*(?:[,.]\d{2})?\s*(?:PLN|zł|EUR|€|USD|\$)?",
+    "email": r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}",
+    "phone": r"(?:\+48\s?)?\d{3}[\s-]?\d{3}[\s-]?\d{3}",
+    # Names - simple heuristic: capitalized words (2+ letters)
+    "names": r"\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]{2,}\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]{2,}\b",
+}
+
+
+@router.post("/{job_id}/detect-patterns")
+async def detect_patterns(
+    job_id: UUID,
+    pattern_type: str = Body(
+        ..., description="Pattern type: pesel, money, email, phone, names"
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Detect sensitive data patterns in PDF text.
+
+    Returns list of matches with page number and bounding boxes.
+    Used by Magic Eraser frontend tool.
+    """
+    job = await session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if pattern_type not in DETECTION_PATTERNS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown pattern type: {pattern_type}. Valid: {list(DETECTION_PATTERNS.keys())}",
+        )
+
+    input_path = Path(settings.storage_path) / job.input_path
+    if not input_path.exists():
+        raise HTTPException(status_code=404, detail="PDF file not found")
+
+    import fitz
+
+    doc = fitz.open(str(input_path))
+    pattern = re.compile(
+        DETECTION_PATTERNS[pattern_type],
+        re.IGNORECASE if pattern_type != "names" else 0,
+    )
+
+    matches = []
+
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        page_rect = page.rect
+        text_dict = page.get_text("dict")
+
+        for block in text_dict.get("blocks", []):
+            if block.get("type", 0) != 0:  # Skip non-text blocks
+                continue
+
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    text = span.get("text", "")
+                    span_bbox = span.get("bbox", [])
+
+                    if len(span_bbox) < 4:
+                        continue
+
+                    # Find all matches in this span
+                    for match in pattern.finditer(text):
+                        matched_text = match.group()
+
+                        # Calculate approximate bbox for the match
+                        # Estimate position based on character offset
+                        text_len = len(text)
+                        if text_len == 0:
+                            continue
+
+                        span_width = span_bbox[2] - span_bbox[0]
+                        char_width = span_width / text_len
+
+                        start_offset = match.start()
+                        match_len = len(matched_text)
+
+                        match_x0 = span_bbox[0] + (start_offset * char_width)
+                        match_x1 = match_x0 + (match_len * char_width)
+
+                        # Normalize to 0-100%
+                        matches.append(
+                            {
+                                "page": page_num,
+                                "text": matched_text,
+                                "pattern_type": pattern_type,
+                                "bbox": {
+                                    "x": match_x0 / page_rect.width * 100,
+                                    "y": span_bbox[1] / page_rect.height * 100,
+                                    "w": (match_x1 - match_x0) / page_rect.width * 100,
+                                    "h": (span_bbox[3] - span_bbox[1])
+                                    / page_rect.height
+                                    * 100,
+                                },
+                            }
+                        )
+
+    doc.close()
+
+    return {
+        "pattern_type": pattern_type,
+        "matches_count": len(matches),
+        "matches": matches,
+    }
+
+
 @router.post("/{job_id}/decisions")
 async def submit_decisions(
     job_id: UUID,
@@ -549,11 +671,21 @@ async def delete_blocks(
         page.apply_redactions()
 
     # Save modified PDF with garbage collection to truly remove data
+    # Use tobytes() to avoid "save to original must be incremental" error
     output_dir = Path(settings.storage_path) / "outputs" / str(job.id)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"blocks_removed_{job.original_filename}"
-    doc.save(str(output_path), garbage=3, deflate=True)
+
+    import time
+
+    timestamp = int(time.time())
+    output_path = output_dir / f"redacted_{timestamp}_{job.original_filename}"
+
+    # Get PDF as bytes, then save to new file
+    pdf_bytes = doc.tobytes(garbage=3, deflate=True)
     doc.close()
+
+    with open(output_path, "wb") as f:
+        f.write(pdf_bytes)
 
     # Update job to point to new file (critical for subsequent operations)
     job.input_path = str(output_path.relative_to(settings.storage_path))

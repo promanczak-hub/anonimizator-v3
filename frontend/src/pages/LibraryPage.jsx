@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, FileText, Trash2, Upload, Sparkles, Shield } from 'lucide-react'
+import { Search, FileText, Trash2, Upload, Shield } from 'lucide-react'
 import { jobs } from '../api/client'
 
 function LibraryPage() {
@@ -13,9 +13,9 @@ function LibraryPage() {
     const [deleting, setDeleting] = useState(false)
     const navigate = useNavigate()
 
-    // Upload state 
+    // Upload state (Redakcja mode only)
     const [file, setFile] = useState(null)
-    const [uploadMode, setUploadMode] = useState('layout')
+    const uploadMode = 'layout' // Fixed to Redakcja mode
     const [dragOver, setDragOver] = useState(false)
     const [uploading, setUploading] = useState(false)
     const [uploadError, setUploadError] = useState(null)
@@ -178,26 +178,6 @@ function LibraryPage() {
                         </div>
                     </div>
 
-                    {/* Mode selector - compact */}
-                    <div className="flex gap-sm">
-                        <div
-                            className={`mode-option ${uploadMode === 'unify' ? 'selected' : ''}`}
-                            onClick={() => setUploadMode('unify')}
-                            style={{ padding: '12px 16px', minWidth: 120 }}
-                        >
-                            <Sparkles size={18} style={{ marginBottom: 4, color: 'var(--color-accent)' }} />
-                            <div style={{ fontSize: '0.85rem', fontWeight: 500 }}>Unifikacja</div>
-                        </div>
-                        <div
-                            className={`mode-option ${uploadMode === 'layout' ? 'selected' : ''}`}
-                            onClick={() => setUploadMode('layout')}
-                            style={{ padding: '12px 16px', minWidth: 120 }}
-                        >
-                            <Shield size={18} style={{ marginBottom: 4, color: 'var(--color-accent)' }} />
-                            <div style={{ fontSize: '0.85rem', fontWeight: 500 }}>Redakcja</div>
-                        </div>
-                    </div>
-
                     {/* Upload button */}
                     <button
                         className="btn btn-primary"
@@ -205,7 +185,7 @@ function LibraryPage() {
                         disabled={!file || uploading}
                         style={{ padding: '12px 24px', whiteSpace: 'nowrap' }}
                     >
-                        {uploading ? 'Przetwarzanie...' : 'Anonimizuj'}
+                        {uploading ? 'Przetwarzanie...' : 'Przetwarzaj PDF'}
                     </button>
                 </div>
 

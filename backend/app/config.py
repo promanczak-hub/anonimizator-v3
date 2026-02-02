@@ -5,10 +5,8 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # Database
-    database_url: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/anonimizator"
-    )
+    # Database - use SQLite for local dev, PostgreSQL for production
+    database_url: str = "sqlite+aiosqlite:///./anonimizator.db"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"

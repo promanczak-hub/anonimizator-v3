@@ -24,7 +24,8 @@ const FabricPDFEditor = forwardRef(({
     onTextEdit,               // (pageIndex, blockIdx, newText) => void
     blocksToDelete = [],
     onBlockToggle,
-    onImageLoad
+    onImageLoad,
+    onMultiSelect              // NEW: (pageIndex, blocks[]) => void - for smart selection
 }, ref) => {
     const canvasRef = useRef(null)
     const fabricRef = useRef(null)
@@ -37,6 +38,31 @@ const FabricPDFEditor = forwardRef(({
     // Word-like text editing state
     const [editingBlock, setEditingBlock] = useState(null) // { blockIndex, text, bbox }
     const inputRef = useRef(null)
+
+    // Smart selection: track blocks highlighted during rectangle drawing (use ref to avoid re-renders)
+    const highlightedBlocksRef = useRef([])
+
+    // Helper: check if two rectangles overlap
+    const checkOverlap = useCallback((rect1, rect2) => {
+        // rect1 in pixels, rect2 in percentage (bbox format)
+        const canvasWidth = fabricRef.current?.getWidth() / (zoom / 100) || 800
+        const canvasHeight = fabricRef.current?.getHeight() / (zoom / 100) || 1000
+
+        const r2Left = (rect2.x / 100) * canvasWidth
+        const r2Top = (rect2.y / 100) * canvasHeight
+        const r2Right = r2Left + (rect2.w / 100) * canvasWidth
+        const r2Bottom = r2Top + (rect2.h / 100) * canvasHeight
+
+        const r1Right = rect1.x + rect1.width
+        const r1Bottom = rect1.y + rect1.height
+
+        return !(
+            rect1.x > r2Right ||
+            r1Right < r2Left ||
+            rect1.y > r2Bottom ||
+            r1Bottom < r2Top
+        )
+    }, [zoom])
 
     // Initialize fabric canvas
     useEffect(() => {
@@ -147,10 +173,10 @@ const FabricPDFEditor = forwardRef(({
         canvas.renderAll()
     }, [regions, editMode])
 
-    // Handle text blocks visualization
+    // Handle text blocks visualization (for both text selection and smart rectangle selection)
     useEffect(() => {
         const canvas = fabricRef.current
-        if (!canvas || editMode !== 'text') return
+        if (!canvas || (editMode !== 'text' && editMode !== 'rectangle')) return
 
         // Remove old text block overlays
         canvas.getObjects().forEach(obj => {
@@ -298,6 +324,34 @@ const FabricPDFEditor = forwardRef(({
                     width: width,
                     height: height
                 })
+
+                // SMART SELECTION: Check which text blocks overlap with selection rectangle
+                const selectionRect = { x, y, width, height }
+                const overlapping = textBlocks
+                    .map((block, idx) => ({ block, idx }))
+                    .filter(({ block }) => checkOverlap(selectionRect, block.bbox))
+                    .map(({ block, idx }) => ({
+                        id: `${pageIndex}_${idx}`,
+                        page: pageIndex,
+                        bbox: block.bbox,
+                        text: block.text,
+                        type: 'smart-select'
+                    }))
+
+                highlightedBlocksRef.current = overlapping
+
+                // Highlight overlapping blocks visually
+                canvas.getObjects().forEach(obj => {
+                    if (obj.isTextBlock) {
+                        const isHighlighted = overlapping.some(b => b.id === `${pageIndex}_${obj.blockIndex}`)
+                        obj.set({
+                            fill: isHighlighted ? 'rgba(34, 197, 94, 0.4)' : 'rgba(59, 130, 246, 0.1)',
+                            stroke: isHighlighted ? '#22c55e' : '#3b82f6',
+                            strokeWidth: isHighlighted ? 2 : 1
+                        })
+                    }
+                })
+
                 canvas.renderAll()
             }
         }
@@ -311,8 +365,22 @@ const FabricPDFEditor = forwardRef(({
             if (editMode === 'rectangle' && isDrawing && currentRectRef.current) {
                 const rect = currentRectRef.current
 
-                // Only save if big enough
-                if (rect.width > 10 && rect.height > 10) {
+                // SMART SELECTION: Add all highlighted blocks to selection
+                if (highlightedBlocksRef.current.length > 0) {
+                    onMultiSelect?.(pageIndex, highlightedBlocksRef.current)
+                    highlightedBlocksRef.current = []
+                    // Reset visual state
+                    canvas.getObjects().forEach(obj => {
+                        if (obj.isTextBlock) {
+                            obj.set({
+                                fill: 'rgba(59, 130, 246, 0.1)',
+                                stroke: '#3b82f6',
+                                strokeWidth: 1
+                            })
+                        }
+                    })
+                } else if (rect.width > 10 && rect.height > 10) {
+                    // No blocks overlapped - add raw rectangle region
                     const newRegion = {
                         id: `rect-${Date.now()}`,
                         x: rect.left,

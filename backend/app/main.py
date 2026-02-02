@@ -39,7 +39,7 @@ app.add_middleware(
 )
 
 # Routers
-app.include_router(health.router, tags=["Health"])
+app.include_router(health.router, prefix=f"{settings.api_prefix}", tags=["Health"])
 app.include_router(jobs.router, prefix=f"{settings.api_prefix}/jobs", tags=["Jobs"])
 app.include_router(
     documents.router, prefix=f"{settings.api_prefix}/documents", tags=["Documents"]

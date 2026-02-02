@@ -1,0 +1,86 @@
+/* PDF Highlighter Custom Styles */
+
+.pdf-highlighter-container {
+    height: 100%;
+    width: 100%;
+}
+
+/* Skeleton loader for PDF */
+.pdf-skeleton {
+    padding: 20px;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.skeleton-line {
+    height: 20px;
+    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    margin-bottom: 12px;
+    border-radius: 4px;
+}
+
+.skeleton-line.short {
+    width: 60%;
+}
+
+@keyframes shimmer {
+    0% {
+        background-position: -200% 0;
+    }
+
+    100% {
+        background-position: 200% 0;
+    }
+}
+
+/* Redaction highlights (pink/red semi-transparent) */
+.Highlight__part {
+    background-color: rgba(239, 68, 68, 0.3) !important;
+    border: 1px solid #ef4444;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.Highlight__part:hover {
+    background-color: rgba(239, 68, 68, 0.5) !important;
+}
+
+/* Applied redaction (solid black) */
+.Highlight--applied .Highlight__part {
+    background-color: #000000 !important;
+    border: none;
+}
+
+/* Popup on hover */
+.highlight-popup {
+    background: #1e1e1e;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* PDF viewer scrollbar */
+.PdfHighlighter {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.3) transparent;
+}
+
+.PdfHighlighter::-webkit-scrollbar {
+    width: 8px;
+}
+
+.PdfHighlighter::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.PdfHighlighter::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+}
+
+.PdfHighlighter::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.5);
+}
